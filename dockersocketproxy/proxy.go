@@ -6,11 +6,11 @@ import (
 	"net"
 	"net/url"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 
-	"github.com/rancher/host-api/auth"
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/common"
+	"github.com/PastureStack/host-api/auth"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/common"
 )
 
 type Handler struct {
@@ -21,12 +21,13 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
-		log.WithFields(log.Fields{"error": err, "url": initialMessage}).Error("Couldn't parse url.")
+		log.Error("Could not parse Docker socket request URL.")
 		return
 	}
 	tokenString := requestUrl.Query().Get("token")
-	_, valid := auth.GetAndCheckToken(tokenString)
-	if !valid {
+	token, valid := auth.GetAndCheckToken(tokenString)
+	if !valid || !auth.HasScope(token, "dockersocket") {
+		log.Error("Docker socket token is invalid or missing its required scope.")
 		return
 	}
 
@@ -36,10 +37,11 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 		return
 	}
 
-	closed := false
+	defer conn.Close()
+	done := make(chan struct{})
 	go func() {
 		defer func() {
-			closed = true
+			close(done)
 			conn.Close()
 		}()
 
@@ -64,7 +66,7 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 	for {
 		buff := make([]byte, 1024)
 		n, err := conn.Read(buff)
-		if n > 0 && err == nil {
+		if n > 0 {
 			text := base64.StdEncoding.EncodeToString(buff[:n])
 			message := common.Message{
 				Key:  key,
@@ -74,8 +76,12 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 			response <- message
 		}
 		if err != nil {
-			if err != io.EOF && !closed {
-				log.WithFields(log.Fields{"error": err}).Errorf("Error reading response.")
+			if err != io.EOF {
+				select {
+				case <-done:
+				default:
+					log.WithFields(log.Fields{"error": err}).Error("Error reading Docker socket response.")
+				}
 			}
 			return
 		}

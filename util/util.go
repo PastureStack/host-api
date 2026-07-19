@@ -1,21 +1,21 @@
 package util
 
 import (
-	rclient "github.com/rancher/go-rancher/client"
-	"github.com/rancher/host-api/config"
+	"github.com/PastureStack/host-api/config"
+	"github.com/PastureStack/host-api/platformapi"
 )
 
-func GetRancherClient() (*rclient.RancherClient, error) {
-	apiUrl := config.Config.CattleUrl
-	accessKey := config.Config.CattleAccessKey
-	secretKey := config.Config.CattleSecretKey
+func GetPlatformClient() (*platformapi.Client, error) {
+	apiURL := config.Config.PlatformURL
+	accessKey := config.Config.PlatformAccessKey
+	secretKey := config.Config.PlatformSecretKey
 
-	if apiUrl == "" || accessKey == "" || secretKey == "" {
+	if apiURL == "" || accessKey == "" || secretKey == "" {
 		return nil, nil
 	}
 
-	apiClient, err := rclient.NewRancherClient(&rclient.ClientOpts{
-		Url:       apiUrl,
+	apiClient, err := platformapi.NewClient(platformapi.ClientOpts{
+		URL:       apiURL,
 		AccessKey: accessKey,
 		SecretKey: secretKey,
 	})

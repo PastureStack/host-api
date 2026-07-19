@@ -2,10 +2,12 @@ package stats
 
 import (
 	"bufio"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/disk"
-	"github.com/shirou/gopsutil/mem"
-	"github.com/shirou/gopsutil/net"
+	"fmt"
+
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/net"
 )
 
 func getRootContainerInfo(count int) (containerInfo, error) {
@@ -24,12 +26,12 @@ func getRootContainerInfo(count int) (containerInfo, error) {
 		}
 		stats.Cpu.Usage.PerCpu = []uint64{}
 		for _, perStats := range cpuPerStats {
-			stats.Cpu.Usage.PerCpu = append(stats.Cpu.Usage.PerCpu, uint64(perStats.User+perStats.System)*1000000000)
+			stats.Cpu.Usage.PerCpu = append(stats.Cpu.Usage.PerCpu, uint64((perStats.User+perStats.System)*1_000_000_000))
 		}
 		if len(cpuStats) > 0 {
-			stats.Cpu.Usage.Total = uint64(cpuStats[0].User+cpuStats[0].System+cpuStats[0].Idle) * 1000000000
-			stats.Cpu.Usage.User = uint64(cpuStats[0].User) * 1000000000
-			stats.Cpu.Usage.System = uint64(cpuStats[0].System) * 1000000000
+			stats.Cpu.Usage.Total = uint64((cpuStats[0].User + cpuStats[0].System + cpuStats[0].Idle) * 1_000_000_000)
+			stats.Cpu.Usage.User = uint64(cpuStats[0].User * 1_000_000_000)
+			stats.Cpu.Usage.System = uint64(cpuStats[0].System * 1_000_000_000)
 		}
 		// memory
 		memStats, err := mem.VirtualMemory()
@@ -74,6 +76,9 @@ func getDockerContainerInfo(reader *bufio.Reader, count int, id string, pid int)
 }
 
 func getAllDockerContainers(readers []*bufio.Reader, count int, IDList []string, pids []int) ([]containerInfo, error) {
+	if len(readers) != len(IDList) || len(readers) != len(pids) {
+		return nil, fmt.Errorf("container statistics inputs have mismatched lengths")
+	}
 	ret := []containerInfo{}
 	for i, reader := range readers {
 		contInfo, err := getContainerInfo(reader, count, IDList[i], pids[i])

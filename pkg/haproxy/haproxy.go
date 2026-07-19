@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 const HAPROXY_SOCK = "/var/run/haproxy.sock"

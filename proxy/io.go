@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/rancher/websocket-proxy/common"
+	"github.com/PastureStack/websocket-proxy/common"
+	"github.com/sirupsen/logrus"
 )
 
 type HttpWriter struct {
@@ -33,7 +33,7 @@ func (h *HttpWriter) writeMessage() error {
 		Type: common.Body,
 		Body: string(bytes),
 	}
-	logrus.Debugf("HTTP WRITER %s: %#v", h.MessageKey, m)
+	logrus.WithFields(logrus.Fields{"key": h.MessageKey, "bytes": len(m.Body)}).Debug("HTTP proxy response chunk")
 	h.Chan <- m
 	h.Message = common.HTTPMessage{}
 	return nil
@@ -70,7 +70,7 @@ func (h *HttpReader) Read(bytes []byte) (int, error) {
 		logrus.Debugf("HTTP READER RETURN EOF %s", h.MessageKey)
 		return count, io.EOF
 	} else {
-		logrus.Debugf("HTTP READER RETURN COUNT %s %d %d: %s", h.MessageKey, count, len(h.Buffered), bytes[:count])
+		logrus.WithFields(logrus.Fields{"key": h.MessageKey, "bytes": count, "buffered": len(h.Buffered)}).Debug("HTTP proxy request chunk")
 		return count, nil
 	}
 }
@@ -87,7 +87,7 @@ func (h *HttpReader) read() error {
 		return err
 	}
 
-	logrus.Debugf("HTTP READER MESSAGE %s %s", h.MessageKey, message.Body)
+	logrus.WithFields(logrus.Fields{"key": h.MessageKey, "bytes": len(message.Body)}).Debug("HTTP proxy request message")
 
 	h.Buffered = message.Body
 	h.EOF = message.EOF

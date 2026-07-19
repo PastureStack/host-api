@@ -11,17 +11,16 @@ import (
 	"testing"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/fsouza/go-dockerclient"
 	"github.com/gorilla/websocket"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/check.v1"
 
-	"github.com/rancher/host-api/config"
-	"github.com/rancher/host-api/events"
-	"github.com/rancher/host-api/testutils"
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/proxy"
-	wsp_utils "github.com/rancher/websocket-proxy/testutils"
+	"github.com/PastureStack/host-api/config"
+	"github.com/PastureStack/host-api/events"
+	"github.com/PastureStack/host-api/testutils"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/proxy"
 )
 
 func Test(t *testing.T) {
@@ -35,17 +34,42 @@ type ProxyTestSuite struct {
 
 var _ = check.Suite(&ProxyTestSuite{})
 
+const (
+	testImageRepo = "busybox"
+	testImageTag  = "1"
+	testImage     = testImageRepo + ":" + testImageTag
+)
+
 func (s *ProxyTestSuite) TestSimpleCalls(c *check.C) {
 	ws := s.connect(c)
 	defer ws.Close()
 
-	encoded := encodeRequest("GET", "/containers/json?all=1", nil, c)
+	encoded := encodeRequest("GET", "/_ping", nil, c)
 	ws.WriteMessage(websocket.TextMessage, encoded)
-	checkResponse(map[string]string{"HTTP/1.1 200 OK": ""}, ws, c)
+	checkResponse(map[string]string{"HTTP/1.1 200 OK": "", "OK": ""}, ws, c)
 
-	encoded = encodeRequest("GET", "/images/json", nil, c)
+	encoded = encodeRequest("GET", "/version", nil, c)
 	ws.WriteMessage(websocket.TextMessage, encoded)
-	checkResponse(map[string]string{"HTTP/1.1 200 OK": ""}, ws, c)
+	checkResponse(map[string]string{"HTTP/1.1 200 OK": "", "ApiVersion": ""}, ws, c)
+}
+
+func (s *ProxyTestSuite) TestRejectsTokenWithoutDockerSocketScope(c *check.C) {
+	dialer := &websocket.Dialer{}
+	token := testutils.CreateTokenWithPayload(map[string]interface{}{
+		"hostUuid": "1",
+		"scope":    "logs",
+	}, s.privateKey)
+	ws, _, err := dialer.Dial("ws://127.0.0.1:4444/v1/dockersocket/?token="+token, nil)
+	if err != nil {
+		c.Fatal(err)
+	}
+	defer ws.Close()
+	if err := ws.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		c.Fatal(err)
+	}
+	if _, _, err := ws.ReadMessage(); err == nil {
+		c.Fatal("Docker socket connection remained open without the required scope")
+	}
 }
 
 func (s *ProxyTestSuite) TestStartAndConnect(c *check.C) {
@@ -53,9 +77,10 @@ func (s *ProxyTestSuite) TestStartAndConnect(c *check.C) {
 	defer ws.Close()
 
 	createConfig := &docker.Config{
-		Image:     "ibuildthecloud/helloworld:latest",
+		Image:     testImage,
 		Tty:       true,
 		OpenStdin: true,
+		Cmd:       []string{"sh", "-c", "echo Sleeping 1; echo Sleeping 3; sleep 5"},
 	}
 
 	container := s.createAndStart(ws, createConfig, c)
@@ -70,10 +95,10 @@ func (s *ProxyTestSuite) TestInteractive(c *check.C) {
 	defer ws.Close()
 
 	createConfig := &docker.Config{
-		Image:     "ibuildthecloud/helloworld:latest",
+		Image:     testImage,
 		Tty:       true,
 		OpenStdin: true,
-		Cmd:       []string{"/bin/sh"},
+		Cmd:       []string{"sh"},
 	}
 
 	container := s.createAndStart(ws, createConfig, c)
@@ -131,7 +156,7 @@ func (s *ProxyTestSuite) TestToCompareDockerClientBehavior(c *check.C) {
 func (s *ProxyTestSuite) createAndStart(ws *websocket.Conn, createConfig *docker.Config, c *check.C) *docker.Container {
 	body, err := json.Marshal(createConfig)
 	if err != nil {
-		c.Fatal("Failed to marshal json. %#v", err)
+		c.Fatalf("Failed to marshal json. %#v", err)
 	}
 	encoded := encodeRequest("POST", "/containers/create", body, c)
 	ws.WriteMessage(websocket.TextMessage, encoded)
@@ -158,9 +183,10 @@ func (s *ProxyTestSuite) connect(c *check.C) *websocket.Conn {
 	headers := http.Header{}
 	payload := map[string]interface{}{
 		"hostUuid": "1",
+		"scope":    "dockersocket",
 	}
-	token := wsp_utils.CreateTokenWithPayload(payload, s.privateKey)
-	url := "ws://localhost:4444/v1/dockersocket/?token=" + token
+	token := testutils.CreateTokenWithPayload(payload, s.privateKey)
+	url := "ws://127.0.0.1:4444/v1/dockersocket/?token=" + token
 	ws, _, err := dialer.Dial(url, headers)
 	if err != nil {
 		c.Fatal(err)
@@ -169,21 +195,26 @@ func (s *ProxyTestSuite) connect(c *check.C) *websocket.Conn {
 }
 
 func checkResponse(checkFor map[string]string, ws *websocket.Conn, c *check.C) string {
+	lastMsg := ""
 	for count := 0; count < 20; count++ {
+		if err := ws.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			c.Fatal(err)
+		}
 		_, m, err := ws.ReadMessage()
 		if err != nil {
 			// ws closed
 			if len(checkFor) != 0 {
-				c.Fatal("Didn't find all keys before ws was closed: ", checkFor)
+				c.Fatalf("Didn't find all keys before ws was closed: %v. Last message: %s. Error: %v", checkFor, lastMsg, err)
 			}
 			return ""
 		}
-		dst := make([]byte, base64.StdEncoding.EncodedLen(len(m)))
-		_, err = base64.StdEncoding.Decode(dst, m)
+		dst := make([]byte, base64.StdEncoding.DecodedLen(len(m)))
+		n, err := base64.StdEncoding.Decode(dst, m)
 		if err != nil {
 			c.Fatal(err)
 		}
-		msg := string(dst)
+		msg := string(dst[:n])
+		lastMsg = msg
 		for k := range checkFor {
 			if strings.Contains(msg, k) {
 				delete(checkFor, k)
@@ -195,7 +226,7 @@ func checkResponse(checkFor map[string]string, ws *websocket.Conn, c *check.C) s
 	}
 
 	if len(checkFor) != 0 {
-		c.Fatal("Didn't find: ", checkFor)
+		c.Fatalf("Didn't find: %v. Last message: %s", checkFor, lastMsg)
 	}
 
 	return ""
@@ -211,26 +242,26 @@ func encodeRequest(method string, uri string, body []byte, c *check.C) []byte {
 	reader := bytes.NewReader(body)
 	req, err := http.NewRequest(method, "http://foo"+uri, reader)
 	if err != nil {
-		c.Fatal("Failed creating new request. %#v", err)
+		c.Fatalf("Failed creating new request. %#v", err)
 	}
 	req.Header.Add("Content-Type", "application/json")
 	dump, err := httputil.DumpRequestOut(req, true)
 	if err != nil {
-		c.Fatal("Failed dumping request. %#v", err)
+		c.Fatalf("Failed dumping request. %#v", err)
 	}
 	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(dump)))
 	base64.StdEncoding.Encode(encoded, dump)
 	return encoded
 }
 
-func (s *ProxyTestSuite) setupWebsocketProxy() {
+func (s *ProxyTestSuite) setupWebsocketProxy(c *check.C) {
 	// TODO Deduplicate. This method and the two below are close copies of the ones in logs_test.go.
 	config.Parse()
 	config.Config.HostUuid = "1"
-	config.Config.ParsedPublicKey = wsp_utils.ParseTestPublicKey()
-	s.privateKey = wsp_utils.ParseTestPrivateKey()
+	config.Config.ParsedPublicKey = testutils.ParseTestPublicKey()
+	s.privateKey = testutils.ParseTestPrivateKey()
 
-	conf := testutils.GetTestConfig(":4444")
+	conf := testutils.GetTestConfig("127.0.0.1:4444")
 	p := &proxy.Starter{
 		BackendPaths:  []string{"/v1/connectbackend"},
 		FrontendPaths: []string{"/v1/{dockersocket:dockersocket}/"},
@@ -240,13 +271,17 @@ func (s *ProxyTestSuite) setupWebsocketProxy() {
 	log.Infof("Starting websocket proxy. Listening on [%s].", conf.ListenAddr)
 
 	go p.StartProxy()
-	time.Sleep(time.Second)
-	signedToken := wsp_utils.CreateBackendToken("1", s.privateKey)
+	if err := testutils.WaitForTCP(conf.ListenAddr, 5*time.Second); err != nil {
+		c.Fatal(err)
+	}
+	signedToken := testutils.CreateBackendToken("1", s.privateKey)
 
 	handlers := make(map[string]backend.Handler)
 	handlers["/v1/dockersocket/"] = &Handler{}
-	go backend.ConnectToProxy("ws://localhost:4444/v1/connectbackend?token="+signedToken, handlers)
-	s.pullImage("ibuildthecloud/helloworld", "latest")
+	go backend.ConnectToProxy("ws://127.0.0.1:4444/v1/connectbackend?token="+signedToken, handlers)
+	if _, err := s.client.InspectImage(testImage); err != nil {
+		c.Fatalf("Local Docker socket proxy test image is missing: %v", err)
+	}
 }
 
 func (s *ProxyTestSuite) SetUpSuite(c *check.C) {
@@ -255,15 +290,5 @@ func (s *ProxyTestSuite) SetUpSuite(c *check.C) {
 		c.Fatalf("Could not connect to docker, err: [%v]", err)
 	}
 	s.client = cli
-	s.setupWebsocketProxy()
-}
-
-func (s *ProxyTestSuite) pullImage(imageRepo, imageTag string) error {
-	imageOptions := docker.PullImageOptions{
-		Repository: imageRepo,
-		Tag:        imageTag,
-	}
-	imageAuth := docker.AuthConfiguration{}
-	log.Infof("Pulling %v:%v image.", imageRepo, imageTag)
-	return s.client.PullImage(imageOptions, imageAuth)
+	s.setupWebsocketProxy(c)
 }

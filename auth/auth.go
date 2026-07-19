@@ -4,11 +4,10 @@ import (
 	"net/http"
 	"time"
 
-	jwt "github.com/dgrijalva/jwt-go"
+	"github.com/PastureStack/host-api/app/common"
+	"github.com/PastureStack/host-api/config"
+	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/golang/glog"
-	"github.com/gorilla/context"
-	"github.com/rancher/host-api/app/common"
-	"github.com/rancher/host-api/config"
 )
 
 func Auth(rw http.ResponseWriter, req *http.Request) bool {
@@ -21,34 +20,31 @@ func Auth(rw http.ResponseWriter, req *http.Request) bool {
 		return false
 	}
 
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		return config.Config.ParsedPublicKey, nil
-	})
-	SetToken(req, token)
-
+	token, err := ParseToken(tokenString, config.Config.ParsedPublicKey)
 	if err != nil {
-		common.CheckError(err, 2)
+		glog.Warning("Token validation failed")
 		return false
 	}
 
 	if !token.Valid {
 		return false
 	}
-
-	if config.Config.HostUuidCheck && token.Claims["hostUuid"] != config.Config.HostUuid {
-		glog.Infoln("Host UUID mismatch , authentication failed")
-		return false
+	if config.Config.HostUuidCheck {
+		hostUUID, found := GetClaimString(token, "hostUuid")
+		if !found || hostUUID != config.Config.HostUuid {
+			glog.Infoln("Host UUID mismatch , authentication failed")
+			return false
+		}
 	}
+	SetToken(req, token)
 
 	return true
 }
 
 func GetAndCheckToken(tokenString string) (*jwt.Token, bool) {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		return config.Config.ParsedPublicKey, nil
-	})
+	token, err := ParseToken(tokenString, config.Config.ParsedPublicKey)
 	if err != nil {
-		common.CheckError(err, 2)
+		glog.Warning("Token validation failed")
 		return token, false
 	}
 
@@ -56,9 +52,12 @@ func GetAndCheckToken(tokenString string) (*jwt.Token, bool) {
 		return token, false
 	}
 
-	if config.Config.HostUuidCheck && token.Claims["hostUuid"] != config.Config.HostUuid {
-		glog.Infoln("Host UUID mismatch , authentication failed")
-		return token, false
+	if config.Config.HostUuidCheck {
+		hostUUID, found := GetClaimString(token, "hostUuid")
+		if !found || hostUUID != config.Config.HostUuid {
+			glog.Infoln("Host UUID mismatch , authentication failed")
+			return token, false
+		}
 	}
 
 	return token, true
@@ -88,6 +87,5 @@ func AuthHttpInterceptor(router http.Handler) http.Handler {
 			// here we might use http.StatusCreated
 		}
 
-		context.Clear(req)
 	})
 }

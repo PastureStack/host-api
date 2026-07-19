@@ -1,8 +1,8 @@
 package events
 
 import (
-	_ "github.com/Sirupsen/logrus"
 	"github.com/fsouza/go-dockerclient"
+	_ "github.com/sirupsen/logrus"
 	"testing"
 	"time"
 )
@@ -48,6 +48,15 @@ func TestEventRouter(t *testing.T) {
 
 	if receivedCount != 2 {
 		t.Fatalf("Received [%v] events", receivedCount)
+	}
+}
+
+func TestEventRouterRejectsInvalidPoolSizes(t *testing.T) {
+	if _, err := NewEventRouter(0, 1, nil, nil); err == nil {
+		t.Fatal("zero event buffer was accepted")
+	}
+	if _, err := NewEventRouter(1, 0, nil, nil); err == nil {
+		t.Fatal("zero worker pool was accepted")
 	}
 }
 
@@ -104,7 +113,7 @@ func spinupContainers(createCount int, dockerClient *docker.Client, t *testing.T
 
 		removeOpts := docker.RemoveContainerOptions{ID: c.ID}
 		if err := dockerClient.RemoveContainer(removeOpts); err != nil {
-			t.Fatalf("Failure", err)
+			t.Fatalf("Failure: %v", err)
 		}
 	}
 }

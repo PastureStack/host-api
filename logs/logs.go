@@ -6,17 +6,16 @@ import (
 	"io"
 	"net/url"
 	"strconv"
-	_ "time"
 
-	log "github.com/Sirupsen/logrus"
 	dockerClient "github.com/fsouza/go-dockerclient"
+	log "github.com/sirupsen/logrus"
 
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/common"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/common"
 
-	// "github.com/rancher/host-api/app/common/connect"
-	"github.com/rancher/host-api/auth"
-	"github.com/rancher/host-api/events"
+	// "github.com/PastureStack/host-api/app/common/connect"
+	"github.com/PastureStack/host-api/auth"
+	"github.com/PastureStack/host-api/events"
 )
 
 type LogsHandler struct {
@@ -27,7 +26,7 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
-		log.WithFields(log.Fields{"error": err, "url": initialMessage}).Error("Couldn't parse url.")
+		log.Error("Could not parse logs request URL.")
 		return
 	}
 	tokenString := requestUrl.Query().Get("token")
@@ -36,18 +35,26 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 		return
 	}
 
-	logs := token.Claims["logs"].(map[string]interface{})
-	container := logs["Container"].(string)
-	follow, found := logs["Follow"].(bool)
+	logs, ok := auth.GetClaimMap(token, "logs")
+	if !ok {
+		log.Error("Token missing logs claim.")
+		return
+	}
+	container, ok := auth.GetMapString(logs, "Container")
+	if !ok || container == "" {
+		log.Error("Token contains an invalid logs Container claim.")
+		return
+	}
+	follow, found := auth.GetMapBool(logs, "Follow")
 
 	if !found {
 		follow = true
 	}
 
-	tailTemp, found := logs["Lines"].(int)
+	tailTemp, found := auth.GetMapInt64(logs, "Lines")
 	var tail string
-	if found {
-		tail = strconv.Itoa(int(tailTemp))
+	if found && tailTemp >= 0 && tailTemp <= 1_000_000 {
+		tail = strconv.FormatInt(tailTemp, 10)
 	} else {
 		tail = "100"
 	}
@@ -62,6 +69,7 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 
 	containerRef, err := client.InspectContainer(container)
 	if err != nil {
+		log.WithFields(log.Fields{"error": err, "container": container}).Error("Couldn't inspect container for logs.")
 		return
 	}
 
@@ -94,6 +102,7 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 
 	go func(r *io.PipeReader) {
 		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		scanner.Split(customSplit)
 		for scanner.Scan() {
 			text := scanner.Text()
@@ -110,7 +119,9 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 	}(reader)
 
 	// Returns an error, but ignoring it because it will always return an error when a streaming call is made.
-	client.Logs(logopts)
+	if err := client.Logs(logopts); err != nil {
+		log.WithFields(log.Fields{"error": err, "container": container}).Debug("Container log stream closed.")
+	}
 }
 
 func customSplit(data []byte, atEOF bool) (advance int, token []byte, err error) {

@@ -1,11 +1,22 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 mkdir -p bin dist
-if [ -e ./scripts/$1 ]; then
-    ./scripts/"$@"
-else
-    exec "$@"
+if [ "$#" -eq 0 ]; then
+    echo 'a command is required' >&2
+    exit 64
 fi
 
-chown -R $DAPPER_UID:$DAPPER_GID .
+command_name=$1
+shift
+if [ -x "./scripts/${command_name}" ]; then
+    "./scripts/${command_name}" "$@"
+else
+    exec "$command_name" "$@"
+fi
+
+if [[ ! ${DAPPER_UID:-} =~ ^[0-9]+$ || ! ${DAPPER_GID:-} =~ ^[0-9]+$ ]]; then
+    echo 'DAPPER_UID and DAPPER_GID must be numeric' >&2
+    exit 64
+fi
+chown -R "${DAPPER_UID}:${DAPPER_GID}" .

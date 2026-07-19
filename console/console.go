@@ -2,19 +2,23 @@ package console
 
 import (
 	"encoding/base64"
-	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"path/filepath"
+	"regexp"
+	"time"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 
-	"github.com/rancher/host-api/auth"
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/common"
+	"github.com/PastureStack/host-api/auth"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/common"
 )
 
-const socketLocFmt string = "/var/lib/rancher/vm/%v/vnc"
+const vmSocketRoot = "/var/lib/rancher/vm"
+
+var safeContainerID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 type Handler struct {
 }
@@ -23,7 +27,7 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 	defer backend.SignalHandlerClosed(key, response)
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
-		log.WithFields(log.Fields{"error": err, "url": initialMessage}).Error("Couldn't parse url.")
+		log.Error("Could not parse console request URL.")
 		return
 	}
 	tokenString := requestUrl.Query().Get("token")
@@ -32,20 +36,29 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 		return
 	}
 
-	console := token.Claims["console"].(map[string]interface{})
-	container := console["container"].(string)
-
-	socketLoc := fmt.Sprintf(socketLocFmt, container)
-	conn, err := net.Dial("unix", socketLoc)
-	if err != nil {
-		log.WithFields(log.Fields{"error": err}).Error("Couldn't dial VM socket [%v].", socketLoc)
+	console, ok := auth.GetClaimMap(token, "console")
+	if !ok {
+		log.Error("Token missing console claim.")
+		return
+	}
+	container, ok := auth.GetMapString(console, "container")
+	if !ok || !safeContainerID.MatchString(container) {
+		log.Error("Token contains an invalid console container claim.")
 		return
 	}
 
-	closed := false
+	socketLoc := filepath.Join(vmSocketRoot, container, "vnc")
+	conn, err := net.DialTimeout("unix", socketLoc, 10*time.Second)
+	if err != nil {
+		log.WithFields(log.Fields{"error": err}).Errorf("Couldn't dial VM socket [%v].", socketLoc)
+		return
+	}
+
+	defer conn.Close()
+	done := make(chan struct{})
 	go func() {
 		defer func() {
-			closed = true
+			close(done)
 			conn.Close()
 		}()
 
@@ -70,7 +83,7 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 	for {
 		buff := make([]byte, 1024)
 		n, err := conn.Read(buff)
-		if n > 0 && err == nil {
+		if n > 0 {
 			text := base64.StdEncoding.EncodeToString(buff[:n])
 			message := common.Message{
 				Key:  key,
@@ -80,8 +93,12 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 			response <- message
 		}
 		if err != nil {
-			if err != io.EOF && !closed {
-				log.WithFields(log.Fields{"error": err}).Errorf("Error reading response.")
+			if err != io.EOF {
+				select {
+				case <-done:
+				default:
+					log.WithFields(log.Fields{"error": err}).Error("Error reading console response.")
+				}
 			}
 			return
 		}

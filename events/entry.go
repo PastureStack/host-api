@@ -1,10 +1,10 @@
 package events
 
 import (
+	"github.com/PastureStack/host-api/config"
+	"github.com/PastureStack/host-api/platformapi"
+	"github.com/PastureStack/host-api/util"
 	"github.com/fsouza/go-dockerclient"
-	rclient "github.com/rancher/go-rancher/client"
-	"github.com/rancher/host-api/config"
-	"github.com/rancher/host-api/util"
 )
 
 const (
@@ -13,18 +13,18 @@ const (
 
 func NewDockerEventsProcessor(poolSize int) *DockerEventsProcessor {
 	return &DockerEventsProcessor{
-		poolSize:         poolSize,
-		getDockerClient:  getDockerClientFn,
-		getHandlers:      getHandlersFn,
-		getRancherClient: util.GetRancherClient,
+		poolSize:          poolSize,
+		getDockerClient:   getDockerClientFn,
+		getHandlers:       getHandlersFn,
+		getPlatformClient: util.GetPlatformClient,
 	}
 }
 
 type DockerEventsProcessor struct {
-	poolSize         int
-	getDockerClient  func() (*docker.Client, error)
-	getHandlers      func(*docker.Client, *rclient.RancherClient) (map[string][]Handler, error)
-	getRancherClient func() (*rclient.RancherClient, error)
+	poolSize          int
+	getDockerClient   func() (*docker.Client, error)
+	getHandlers       func(*docker.Client, *platformapi.Client) (map[string][]Handler, error)
+	getPlatformClient func() (*platformapi.Client, error)
 }
 
 func (de *DockerEventsProcessor) Process() error {
@@ -33,12 +33,12 @@ func (de *DockerEventsProcessor) Process() error {
 		return err
 	}
 
-	rancherClient, err := de.getRancherClient()
+	platformClient, err := de.getPlatformClient()
 	if err != nil {
 		return err
 	}
 
-	handlers, err := de.getHandlers(dockerClient, rancherClient)
+	handlers, err := de.getHandlers(dockerClient, platformClient)
 	if err != nil {
 		return err
 	}
@@ -47,7 +47,9 @@ func (de *DockerEventsProcessor) Process() error {
 	if err != nil {
 		return err
 	}
-	router.Start()
+	if err := router.Start(); err != nil {
+		return err
+	}
 
 	listOpts := docker.ListContainersOptions{
 		All:     true,
@@ -55,6 +57,7 @@ func (de *DockerEventsProcessor) Process() error {
 	}
 	containers, err := dockerClient.ListContainers(listOpts)
 	if err != nil {
+		_ = router.Stop()
 		return err
 	}
 
@@ -73,22 +76,22 @@ func getDockerClientFn() (*docker.Client, error) {
 	return NewDockerClient()
 }
 
-func getHandlersFn(dockerClient *docker.Client, rancherClient *rclient.RancherClient) (map[string][]Handler, error) {
+func getHandlersFn(dockerClient *docker.Client, platformClient *platformapi.Client) (map[string][]Handler, error) {
 
 	handlers := map[string][]Handler{}
 
-	// Rancher Event Handler
-	if rancherClient != nil {
-		sendToRancherHandler := &SendToRancherHandler{
+	// Control-platform event handler.
+	if platformClient != nil {
+		sendToPlatformHandler := &SendToPlatformHandler{
 			client:   dockerClient,
-			rancher:  rancherClient,
+			platform: platformClient.ContainerEvent,
 			hostUuid: getHostUuid(),
 		}
-		handlers["start"] = append(handlers["start"], sendToRancherHandler)
-		handlers["stop"] = []Handler{sendToRancherHandler}
-		handlers["die"] = []Handler{sendToRancherHandler}
-		handlers["kill"] = []Handler{sendToRancherHandler}
-		handlers["destroy"] = []Handler{sendToRancherHandler}
+		handlers["start"] = append(handlers["start"], sendToPlatformHandler)
+		handlers["stop"] = []Handler{sendToPlatformHandler}
+		handlers["die"] = []Handler{sendToPlatformHandler}
+		handlers["kill"] = []Handler{sendToPlatformHandler}
+		handlers["destroy"] = []Handler{sendToPlatformHandler}
 	}
 
 	return handlers, nil

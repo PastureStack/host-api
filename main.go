@@ -4,27 +4,32 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/rancher/host-api/config"
-	"github.com/rancher/host-api/console"
-	"github.com/rancher/host-api/dockersocketproxy"
-	"github.com/rancher/host-api/events"
-	"github.com/rancher/host-api/exec"
-	"github.com/rancher/host-api/logs"
-	"github.com/rancher/host-api/proxy"
-	"github.com/rancher/host-api/stats"
-	"github.com/rancher/host-api/util"
+	"github.com/PastureStack/host-api/config"
+	"github.com/PastureStack/host-api/console"
+	"github.com/PastureStack/host-api/dockersocketproxy"
+	"github.com/PastureStack/host-api/events"
+	"github.com/PastureStack/host-api/exec"
+	"github.com/PastureStack/host-api/logs"
+	"github.com/PastureStack/host-api/platformapi"
+	"github.com/PastureStack/host-api/proxy"
+	"github.com/PastureStack/host-api/stats"
+	"github.com/PastureStack/host-api/util"
+	"github.com/sirupsen/logrus"
 
 	"github.com/golang/glog"
 
-	rclient "github.com/rancher/go-rancher/client"
-	"github.com/rancher/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/backend"
+)
+
+var (
+	version     = "0.38.4"
+	showVersion = flag.Bool("version", false, "Print the host API version and exit")
 )
 
 func main() {
@@ -32,13 +37,16 @@ func main() {
 	if err != nil {
 		logrus.Fatal(err)
 	}
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
-	flag.Parse()
 	defer glog.Flush()
 
 	if config.Config.PidFile != "" {
 		logrus.Infof("Writing pid %d to %s", os.Getpid(), config.Config.PidFile)
-		if err := ioutil.WriteFile(config.Config.PidFile, []byte(strconv.Itoa(os.Getpid())), 0644); err != nil {
+		if err := os.WriteFile(config.Config.PidFile, []byte(strconv.Itoa(os.Getpid())), 0644); err != nil {
 			logrus.Fatalf("Failed to write pid file %s: %v", config.Config.PidFile, err)
 		}
 	}
@@ -57,15 +65,15 @@ func main() {
 		logrus.Fatal(err)
 	}
 
-	rancherClient, err := util.GetRancherClient()
+	platformClient, err := util.GetPlatformClient()
 	if err != nil {
 		logrus.Fatal(err)
 	}
 
-	tokenRequest := &rclient.HostApiProxyToken{
-		ReportedUuid: config.Config.HostUuid,
+	tokenRequest := &platformapi.HostAPIProxyToken{
+		ReportedUUID: config.Config.HostUuid,
 	}
-	tokenResponse, err := getConnectionToken(0, tokenRequest, rancherClient)
+	tokenResponse, err := getConnectionToken(0, tokenRequest, platformClient)
 	if err != nil {
 		logrus.Fatal(err)
 	} else if tokenResponse == nil {
@@ -75,6 +83,7 @@ func main() {
 	}
 
 	handlers := make(map[string]backend.Handler)
+	logrus.Info(operatorMessage(config.Config.Locale, "start"))
 	handlers["/v1/logs/"] = &logs.LogsHandler{}
 	handlers["/v2-beta/logs/"] = &logs.LogsHandler{}
 	handlers["/v1/stats/"] = &stats.StatsHandler{}
@@ -91,39 +100,81 @@ func main() {
 	handlers["/v2-beta/dockersocket/"] = &dockersocketproxy.Handler{}
 	handlers["/v1/container-proxy/"] = &proxy.Handler{}
 	handlers["/v2-beta/container-proxy/"] = &proxy.Handler{}
-	backend.ConnectToProxy(tokenResponse.Url+"?token="+tokenResponse.Token, handlers)
+	connectionURL, err := proxyConnectionURL(tokenResponse)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	if err := backend.ConnectToProxy(connectionURL, handlers); err != nil {
+		logrus.Fatal(err)
+	}
+}
+
+const maxProxyTokenBytes = 16 << 10
+
+func proxyConnectionURL(tokenResponse *platformapi.HostAPIProxyToken) (string, error) {
+	if tokenResponse == nil {
+		return "", fmt.Errorf("host API proxy token response is missing")
+	}
+	if tokenResponse.Token == "" || len(tokenResponse.Token) > maxProxyTokenBytes {
+		return "", fmt.Errorf("host API proxy token must contain between 1 and %d bytes", maxProxyTokenBytes)
+	}
+	endpoint, err := url.Parse(tokenResponse.URL)
+	if err != nil {
+		return "", fmt.Errorf("invalid host API proxy URL: %w", err)
+	}
+	if endpoint.Scheme != "ws" && endpoint.Scheme != "wss" {
+		return "", fmt.Errorf("host API proxy URL must use ws or wss")
+	}
+	if endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" {
+		return "", fmt.Errorf("host API proxy URL has an invalid authority or fragment")
+	}
+	query := endpoint.Query()
+	query.Set("token", tokenResponse.Token)
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String(), nil
 }
 
 const maxWaitOnHostTries = 20
 
-func getConnectionToken(try int, tokenReq *rclient.HostApiProxyToken, rancherClient *rclient.RancherClient) (*rclient.HostApiProxyToken, error) {
-	if try >= maxWaitOnHostTries {
-		return nil, fmt.Errorf("Reached max retry attempts for getting token.")
+func getConnectionToken(try int, tokenReq *platformapi.HostAPIProxyToken, platformClient *platformapi.Client) (*platformapi.HostAPIProxyToken, error) {
+	if platformClient == nil || platformClient.HostAPIProxyToken == nil {
+		return nil, nil
 	}
-
-	tokenResponse, err := rancherClient.HostApiProxyToken.Create(tokenReq)
-	if err != nil {
-		if apiError, ok := err.(*rclient.ApiError); ok {
-			if apiError.StatusCode == 422 {
-				parsed := &ParsedError{}
-				if uErr := json.Unmarshal([]byte(apiError.Body), &parsed); uErr == nil {
-					if strings.EqualFold(parsed.Code, "InvalidReference") && strings.EqualFold(parsed.FieldName, "reportedUuid") {
-						logrus.WithField("reportedUuid", config.Config.HostUuid).WithField("Attempt", try).Infof("Host not registered yet. Sleeping 1 second and trying again.")
-						time.Sleep(time.Second)
-						try += 1
-						return getConnectionToken(try, tokenReq, rancherClient) // Recursion!
-					}
-				} else {
-					return nil, uErr
-				}
-			} else if apiError.StatusCode == 501 {
-				logrus.Infof("Host-api proxy disabled. Will not connect.")
-				return nil, nil
-			}
+	for attempt := try; attempt < maxWaitOnHostTries; attempt++ {
+		tokenResponse, err := platformClient.HostAPIProxyToken.Create(tokenReq)
+		if err == nil {
+			return tokenResponse, nil
+		}
+		apiError, ok := err.(*platformapi.APIError)
+		if !ok {
 			return nil, err
 		}
+		if apiError.StatusCode == 501 {
+			logrus.Info("Host API proxy disabled. Will not connect.")
+			return nil, nil
+		}
+		if apiError.StatusCode != 422 {
+			return nil, err
+		}
+		parsed := &ParsedError{}
+		if unmarshalErr := json.Unmarshal([]byte(apiError.Body), parsed); unmarshalErr != nil {
+			return nil, unmarshalErr
+		}
+		if !strings.EqualFold(parsed.Code, "InvalidReference") || !strings.EqualFold(parsed.FieldName, "reportedUuid") {
+			return nil, err
+		}
+		logrus.WithField("reportedUuid", config.Config.HostUuid).WithField("attempt", attempt+1).Info("Host is not registered yet; retrying in one second.")
+		time.Sleep(time.Second)
 	}
-	return tokenResponse, nil
+	return nil, fmt.Errorf("reached %d attempts while waiting for host registration", maxWaitOnHostTries)
+}
+
+func operatorMessage(locale, key string) string {
+	messages := map[string]map[string]string{
+		"en-US": {"start": "PastureStack host API is ready to connect"},
+		"zh-TW": {"start": "PastureStack 主機 API 已準備連線"},
+	}
+	return messages[locale][key]
 }
 
 type ParsedError struct {

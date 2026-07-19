@@ -1,35 +1,30 @@
-.PHONY: \
-	all \
-	deps \
-	updatedeps \
-	testdeps \
-	updatetestdeps \
-	cov \
-	test \
-	clean
+ifeq "$(strip $(shell go env GOARCH))" "amd64"
+RACE_FLAG := -race
+endif
 
-all: test
+.PHONY: test
+test: pretest gotest
 
-deps:
-	go get -d -v ./...
+.PHONY: golangci-lint
+golangci-lint:
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	golangci-lint run
 
-updatedeps:
-	go get -d -v -u -f ./...
+.PHONY: staticcheck
+staticcheck:
+	go install honnef.co/go/tools/cmd/staticcheck@master
+	staticcheck ./...
 
-testdeps:
-	go get -d -v -t ./...
+.PHONY: lint
+lint: golangci-lint staticcheck
 
-updatetestdeps:
-	go get -d -v -t -u -f ./...
+.PHONY: pretest
+pretest: lint
 
-cov: testdeps
-	go get -v github.com/axw/gocov/gocov
-	go get golang.org/x/tools/cmd/cover
-	gocov test | gocov report
+.PHONY: gotest
+gotest:
+	go test $(RACE_FLAG) -vet all ./...
 
-test: testdeps
-	go test ./...
-	./testing/bin/fmtpolice
-
-clean:
-	go clean ./...
+.PHONY: integration
+integration:
+	go test -tags docker_integration -run TestIntegration -v

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PastureStack/host-api/platformapi"
 	"github.com/fsouza/go-dockerclient"
-	rclient "github.com/rancher/go-rancher/client"
 )
 
 func TestProcessDockerEvents(t *testing.T) {
@@ -29,7 +29,7 @@ func TestProcessDockerEvents(t *testing.T) {
 		handlerFunc: hFn,
 	}
 	processor.getHandlers = func(dockerClient *docker.Client,
-		rancherClient *rclient.RancherClient) (map[string][]Handler, error) {
+		platformClient *platformapi.Client) (map[string][]Handler, error) {
 		return map[string][]Handler{"start": {handler}}, nil
 	}
 
@@ -44,7 +44,7 @@ func TestProcessDockerEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	if err := dockerClient.StartContainer(preexistRunning.ID, &docker.HostConfig{}); err != nil {
+	if err := dockerClient.StartContainer(preexistRunning.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	preexistPaused, _ := createNetTestContainer(dockerClient, "10.1.2.3")
@@ -55,7 +55,7 @@ func TestProcessDockerEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	if err := dockerClient.StartContainer(preexistPaused.ID, &docker.HostConfig{}); err != nil {
+	if err := dockerClient.StartContainer(preexistPaused.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	dockerClient.PauseContainer(preexistPaused.ID)
@@ -90,8 +90,8 @@ func TestGetHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// RancherClient is not nil, so SendToRancherHandler should be configured
-	handlers, err = getHandlersFn(dockerClient, &rclient.RancherClient{})
+	// RancherClient is not nil, so SendToPlatformHandler should be configured
+	handlers, err = getHandlersFn(dockerClient, &platformapi.Client{ContainerEvent: &MockContainerEventOps{t: t}})
 	if err != nil {
 		t.Fatal(err)
 	}

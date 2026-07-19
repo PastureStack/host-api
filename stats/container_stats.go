@@ -2,18 +2,16 @@ package stats
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net/url"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
-
-	"github.com/docker/engine-api/client"
-	"github.com/docker/engine-api/types"
-	"github.com/rancher/host-api/config"
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/common"
-	"golang.org/x/net/context"
+	"github.com/PastureStack/host-api/auth"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/common"
+	"github.com/moby/moby/client"
+	log "github.com/sirupsen/logrus"
 )
 
 type ContainerStatsHandler struct {
@@ -24,28 +22,14 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
-		log.WithFields(log.Fields{"error": err, "message": initialMessage}).Error("Couldn't parse url from message.")
+		log.Error("Could not parse container statistics request URL.")
 		return
 	}
 
 	tokenString := requestUrl.Query().Get("token")
 
-	containerIds := map[string]string{}
-
-	token, err := parseRequestToken(tokenString, config.Config.ParsedPublicKey)
-	if err == nil {
-		containerIdsInterface, found := token.Claims["containerIds"]
-		if found {
-			containerIdsVal, ok := containerIdsInterface.(map[string]interface{})
-			if ok {
-				for key, val := range containerIdsVal {
-					if containerIdsValString, ok := val.(string); ok {
-						containerIds[key] = containerIdsValString
-					}
-				}
-			}
-		}
-	}
+	token, valid := auth.GetAndCheckToken(tokenString)
+	containerIds, authorized := getContainerIDsClaim(token)
 
 	id := ""
 	parts := pathParts(requestUrl.Path)
@@ -53,17 +37,25 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 		id = parts[2]
 	}
 
-	if err != nil {
-		log.WithFields(log.Fields{"id": id, "error": err}).Error("Couldn't find container for id.")
+	if !valid || !authorized {
+		log.WithField("id", id).Error("Invalid container statistics token.")
 		return
 	}
+	if id != "" {
+		if !containerStatsAuthorized(id, containerIds) {
+			log.WithField("id", id).Error("Container statistics token does not authorize this container.")
+			return
+		}
+	}
 
-	dclient, err := client.NewEnvClient()
+	dclient, err := newDockerClient()
 	if err != nil {
 		log.WithFields(log.Fields{"error": err}).Error("Couldn't get docker client.")
 		return
 	}
-	dclient.UpdateClientVersion("1.22")
+	defer dclient.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	reader, writer := io.Pipe()
 
@@ -71,6 +63,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 		for {
 			_, ok := <-incomingMessages
 			if !ok {
+				cancel()
 				w.Close()
 				return
 			}
@@ -79,6 +72,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 
 	go func(r *io.PipeReader) {
 		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			text := scanner.Text()
 			message := common.Message{
@@ -102,20 +96,20 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 
 	// get single container stats
 	if id != "" {
-		inspect, err := dclient.ContainerInspect(context.Background(), id)
+		inspect, err := dclient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 		if err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("Can not inspect containers")
 			return
 		}
-		statsReader, err := dclient.ContainerStats(context.Background(), id, true)
+		statsResult, err := dclient.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: true})
 		if err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("Can not get stats reader from docker")
 			return
 		}
-		defer statsReader.Close()
+		defer statsResult.Body.Close()
 
-		pid := inspect.State.Pid
-		bufioReader := bufio.NewReader(statsReader)
+		pid := inspect.Container.State.Pid
+		bufioReader := bufio.NewReader(statsResult.Body)
 		for {
 			infos := []containerInfo{}
 			cInfo, err := getContainerStats(bufioReader, count, id, pid)
@@ -140,7 +134,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 			count = 1
 		}
 	} else {
-		contList, err := dclient.ContainerList(context.Background(), types.ContainerListOptions{})
+		contList, err := dclient.ContainerList(ctx, client.ContainerListOptions{})
 		if err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("Can not list containers")
 			return
@@ -148,21 +142,21 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 		IDList := []string{}
 		bufioReaders := []*bufio.Reader{}
 		pids := []int{}
-		for _, cont := range contList {
+		for _, cont := range contList.Items {
 			if _, ok := containerIds[cont.ID]; ok {
-				inspect, err := dclient.ContainerInspect(context.Background(), cont.ID)
+				inspect, err := dclient.ContainerInspect(ctx, cont.ID, client.ContainerInspectOptions{})
 				if err != nil {
 					log.WithFields(log.Fields{"error": err}).Error("Can not inspect containers")
 					return
 				}
-				statsReader, err := dclient.ContainerStats(context.Background(), cont.ID, true)
+				statsResult, err := dclient.ContainerStats(ctx, cont.ID, client.ContainerStatsOptions{Stream: true})
 				if err != nil {
 					log.WithFields(log.Fields{"error": err}).Error("Can not get stats reader from docker")
 					return
 				}
-				defer statsReader.Close()
-				pids = append(pids, inspect.State.Pid)
-				bufioReader := bufio.NewReader(statsReader)
+				defer statsResult.Body.Close()
+				pids = append(pids, inspect.Container.State.Pid)
+				bufioReader := bufio.NewReader(statsResult.Body)
 				bufioReaders = append(bufioReaders, bufioReader)
 				IDList = append(IDList, cont.ID)
 			}
@@ -188,6 +182,9 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 			time.Sleep(1 * time.Second)
 		}
 	}
+}
 
-	return
+func containerStatsAuthorized(id string, containerIDs map[string]string) bool {
+	_, allowed := containerIDs[id]
+	return id != "" && allowed
 }

@@ -1,39 +1,77 @@
 package testutils
 
 import (
-	"io/ioutil"
+	"crypto/rand"
+	"crypto/rsa"
+	"fmt"
+	"net"
+	"sync"
+	"time"
 
-	log "github.com/Sirupsen/logrus"
-	jwt "github.com/dgrijalva/jwt-go"
-
-	"github.com/rancher/websocket-proxy/proxy"
+	"github.com/PastureStack/websocket-proxy/proxy"
+	jwt "github.com/golang-jwt/jwt/v5"
 )
 
-var privateKey interface{}
+var (
+	testKeyOnce sync.Once
+	testKey     *rsa.PrivateKey
+	testKeyErr  error
+)
+
+func runtimeTestKey() *rsa.PrivateKey {
+	testKeyOnce.Do(func() {
+		testKey, testKeyErr = rsa.GenerateKey(rand.Reader, 2048)
+	})
+	if testKeyErr != nil {
+		panic(testKeyErr)
+	}
+	return testKey
+}
 
 func ParseTestPrivateKey() interface{} {
-	keyBytes, err := ioutil.ReadFile("../testutils/private.pem")
-	if err != nil {
-		log.Fatal("Failed to parse private key.", err)
-	}
+	return runtimeTestKey()
+}
 
-	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM(keyBytes)
-	if err != nil {
-		log.Fatal("Failed to parse private key.", err)
-	}
+func ParseTestPublicKey() interface{} {
+	return &runtimeTestKey().PublicKey
+}
 
-	return privateKey
+func CreateTokenWithPayload(payload map[string]interface{}, privateKey interface{}) string {
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims(payload))
+	signed, err := token.SignedString(privateKey)
+	if err != nil {
+		panic(err)
+	}
+	return signed
+}
+
+func CreateToken(hostUUID string, privateKey interface{}) string {
+	return CreateTokenWithPayload(map[string]interface{}{"hostUuid": hostUUID}, privateKey)
+}
+
+func CreateBackendToken(reportedUUID string, privateKey interface{}) string {
+	return CreateTokenWithPayload(map[string]interface{}{"reportedUuid": reportedUUID}, privateKey)
 }
 
 func GetTestConfig(addr string) *proxy.Config {
-	config := &proxy.Config{
-		ListenAddr: addr,
+	return &proxy.Config{
+		ListenAddr:   addr,
+		PlatformAddr: "127.0.0.1:65535",
+		PublicKey:    ParseTestPublicKey(),
 	}
+}
 
-	pubKey, err := proxy.ParsePublicKey("../testutils/public.pem")
-	if err != nil {
-		log.Fatal("Failed to parse key. ", err)
+func WaitForTCP(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		time.Sleep(25 * time.Millisecond)
 	}
-	config.PublicKey = pubKey
-	return config
+	return fmt.Errorf("test proxy at %s did not become ready: %w", addr, lastErr)
 }

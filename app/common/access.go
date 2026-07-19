@@ -2,6 +2,7 @@
 package common
 
 import (
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,14 +23,14 @@ type accessLog struct {
 func LogAccess(w http.ResponseWriter, req *http.Request, duration time.Duration) {
 	clientIP := req.RemoteAddr
 
-	if colon := strings.LastIndex(clientIP, ":"); colon != -1 {
-		clientIP = clientIP[:colon]
+	if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		clientIP = host
 	}
 
 	record := &accessLog{
 		ip:          clientIP,
 		method:      req.Method,
-		uri:         req.RequestURI,
+		uri:         req.URL.EscapedPath(),
 		protocol:    req.Proto,
 		host:        req.Host,
 		elapsedTime: duration,
@@ -39,7 +40,11 @@ func LogAccess(w http.ResponseWriter, req *http.Request, duration time.Duration)
 }
 
 func writeAccessLog(record *accessLog) {
-	logRecord := "" + record.ip + " " + record.protocol + " " + record.method + ": " + record.uri + ", host: " + record.host + " (load time: " + strconv.FormatFloat(record.elapsedTime.Seconds(), 'f', 5, 64) + " seconds)"
+	logRecord := sanitizeLogValue(record.ip) + " " + sanitizeLogValue(record.protocol) + " " + sanitizeLogValue(record.method) + ": " + sanitizeLogValue(record.uri) + ", host: " + sanitizeLogValue(record.host) + " (load time: " + strconv.FormatFloat(record.elapsedTime.Seconds(), 'f', 5, 64) + " seconds)"
 	glog.Infoln(logRecord)
 	glog.Flush()
+}
+
+func sanitizeLogValue(value string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(value)
 }

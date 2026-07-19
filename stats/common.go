@@ -3,14 +3,17 @@ package stats
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
-	jwt "github.com/dgrijalva/jwt-go"
-	"github.com/shirou/gopsutil/mem"
-	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netns"
 	"strings"
 	"time"
+
+	"github.com/PastureStack/host-api/auth"
+	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 )
+
+const maxStatsResourceIDBytes = 256
 
 func pathParts(path string) []string {
 	path = strings.TrimPrefix(path, "/")
@@ -19,13 +22,45 @@ func pathParts(path string) []string {
 }
 
 func parseRequestToken(tokenString string, parsedPublicKey interface{}) (*jwt.Token, error) {
-	if tokenString == "" {
-		return nil, fmt.Errorf("No JWT token provided")
-	}
+	return auth.ParseToken(tokenString, parsedPublicKey)
+}
 
-	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		return parsedPublicKey, nil
-	})
+func getTokenClaim(token *jwt.Token, key string) (interface{}, bool) {
+	return auth.GetClaim(token, key)
+}
+
+func getContainerIDsClaim(token *jwt.Token) (map[string]string, bool) {
+	claim, found := auth.GetClaimMap(token, "containerIds")
+	if !found {
+		return nil, false
+	}
+	result := make(map[string]string, len(claim))
+	for containerID, resourceIDValue := range claim {
+		resourceID, ok := resourceIDValue.(string)
+		if !ok || containerID == "" || resourceID == "" || len(containerID) > maxStatsResourceIDBytes || len(resourceID) > maxStatsResourceIDBytes {
+			return nil, false
+		}
+		result[containerID] = resourceID
+	}
+	return result, true
+}
+
+func getResourceIDClaim(token *jwt.Token) (string, bool) {
+	resourceID, found := auth.GetClaimString(token, "resourceId")
+	return resourceID, found && resourceID != "" && len(resourceID) <= maxStatsResourceIDBytes
+}
+
+func legacyStatsAuthorization(token *jwt.Token, containerID string) (map[string]string, string, bool) {
+	if containerID == "" {
+		resourceID, ok := getResourceIDClaim(token)
+		return nil, resourceID, ok
+	}
+	containerIDs, ok := getContainerIDsClaim(token)
+	if !ok {
+		return nil, "", false
+	}
+	_, allowed := containerIDs[containerID]
+	return containerIDs, "", allowed
 }
 
 func getContainerStats(reader *bufio.Reader, count int, id string, pid int) (containerInfo, error) {
@@ -266,16 +301,19 @@ func getContainerInfo(reader *bufio.Reader, count int, id string, pid int) (cont
 func convertDockerStats(stats DockerStats, pid int) *containerStats {
 	containerStats := containerStats{}
 	containerStats.Timestamp = stats.Read
-	containerStats.Cpu.Usage.Total = uint64(stats.CPUStats.CPUUsage.TotalUsage)
+	containerStats.Cpu.Usage.Total = nonNegative(stats.CPUStats.CPUUsage.TotalUsage)
 	containerStats.Cpu.Usage.PerCpu = []uint64{}
 	for _, value := range stats.CPUStats.CPUUsage.PercpuUsage {
-		containerStats.Cpu.Usage.PerCpu = append(containerStats.Cpu.Usage.PerCpu, uint64(value))
+		containerStats.Cpu.Usage.PerCpu = append(containerStats.Cpu.Usage.PerCpu, nonNegative(value))
 	}
-	containerStats.Cpu.Usage.System = uint64(stats.CPUStats.CPUUsage.UsageInKernelmode)
-	containerStats.Cpu.Usage.User = uint64(stats.CPUStats.CPUUsage.UsageInKernelmode)
-	containerStats.Memory.Usage = uint64(stats.MemoryStats.Usage)
+	containerStats.Cpu.Usage.System = nonNegative(stats.CPUStats.CPUUsage.UsageInKernelmode)
+	containerStats.Cpu.Usage.User = nonNegative(stats.CPUStats.CPUUsage.UsageInUsermode)
+	containerStats.Memory.Usage = nonNegative(stats.MemoryStats.Usage)
 	containerStats.Network.Interfaces = []InterfaceStats{}
 	for name, netStats := range getLinkStats(pid) {
+		if netStats == nil {
+			continue
+		}
 		data := InterfaceStats{}
 		data.Name = name
 		data.RxBytes = uint64(netStats.RxBytes)
@@ -291,11 +329,20 @@ func convertDockerStats(stats DockerStats, pid int) *containerStats {
 	containerStats.DiskIo.IoServiceBytes = []PerDiskStats{}
 	for _, diskStats := range stats.BlkioStats.IoServiceBytesRecursive {
 		data := PerDiskStats{}
+		data.Major = nonNegative(diskStats.Major)
+		data.Minor = nonNegative(diskStats.Minor)
 		data.Stats = map[string]uint64{}
-		data.Stats[diskStats.Op] = uint64(diskStats.Value)
+		data.Stats[diskStats.Op] = nonNegative(diskStats.Value)
 		containerStats.DiskIo.IoServiceBytes = append(containerStats.DiskIo.IoServiceBytes, data)
 	}
 	return &containerStats
+}
+
+func nonNegative(value int64) uint64 {
+	if value < 0 {
+		return 0
+	}
+	return uint64(value)
 }
 
 func FromString(rawstring string) (DockerStats, error) {

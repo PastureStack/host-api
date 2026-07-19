@@ -1,0 +1,230 @@
+name: Manual security release gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-api-security-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Build, test, reproduce, scan, and inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CANDIDATE_VERSION: 0.38.4
+      DAPPER_IMAGE: pasturestack-host-api-dapper:security-gate
+      TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+      COSIGN_IMAGE: ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8
+      TRIVY_CACHE: /tmp/pasturestack-host-api-trivy-cache
+
+    steps:
+      - name: Check out the complete reviewed history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source, history, and privacy boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list --count d56f3d0..HEAD)" = 1
+          test "$(git rev-list --count --merges d56f3d0..HEAD)" = 0
+          private_pattern=$(printf '%s|%s|%s' 'chen''21019' '10\.0\.0\.''125' 'C:\\''Users\\')
+          if git grep -n -E "$private_pattern" -- .; then
+            echo 'Private operator data is present in the public source tree.' >&2
+            exit 1
+          fi
+          mkdir -p evidence
+          printf '%s\n' "$GITHUB_SHA" > evidence/source-revision.txt
+          docker version
+
+      - name: Build, race-test, validate, and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          make ci DAPPER_IMAGE="$DAPPER_IMAGE" VERSION_OVERRIDE="$CANDIDATE_VERSION"
+          test "$(bin/host-api --version)" = "$CANDIDATE_VERSION"
+          cp bin/host-api evidence/host-api-linux-amd64
+          cp dist/coverage.out evidence/coverage.out
+          cp dist/coverage-summary.txt evidence/coverage-summary.txt
+          grep -F 'total:' evidence/coverage-summary.txt
+          cp "dist/artifacts/host-api-${CANDIDATE_VERSION}.tar.gz" evidence/first-package.tar.gz
+          sha256sum evidence/host-api-linux-amd64 > evidence/host-api.sha256
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/go/src/github.com/PastureStack/host-api" \
+            -e DAPPER_UID="$(id -u)" \
+            -e DAPPER_GID="$(id -g)" \
+            -e ARCH=amd64 \
+            -e VERSION_OVERRIDE="$CANDIDATE_VERSION" \
+            "$DAPPER_IMAGE" bash -lc \
+            'go version -m /go/src/github.com/PastureStack/host-api/bin/host-api' \
+            > evidence/host-api-go-version.txt
+          awk '$1 == "#" && ($3 ~ /^v/ || $3 ~ /^[0-9]/) { print $2 "\t" $3 }' \
+            vendor/modules.txt > evidence/go-modules.tsv
+          test -s evidence/go-modules.tsv
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo 'A verification command modified tracked source before the reproducibility check.' >&2
+            git status --short >&2
+            exit 1
+          fi
+
+      - name: Prove byte-identical packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/go/src/github.com/PastureStack/host-api" \
+            -e DAPPER_UID="$(id -u)" \
+            -e DAPPER_GID="$(id -g)" \
+            -e ARCH=amd64 \
+            -e VERSION_OVERRIDE="$CANDIDATE_VERSION" \
+            "$DAPPER_IMAGE" package
+          cp "dist/artifacts/host-api-${CANDIDATE_VERSION}.tar.gz" evidence/second-package.tar.gz
+          cmp evidence/first-package.tar.gz evidence/second-package.tar.gz
+          sha256sum evidence/first-package.tar.gz evidence/second-package.tar.gz \
+            > evidence/package-sha256.txt
+
+      - name: Run reachable Go vulnerability analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/go/src/github.com/PastureStack/host-api" \
+            -e DAPPER_UID="$(id -u)" \
+            -e DAPPER_GID="$(id -g)" \
+            -e GOTOOLCHAIN=local \
+            -e GOFLAGS=-mod=mod \
+            "$DAPPER_IMAGE" bash -lc \
+            'cd /go/src/github.com/PastureStack/host-api && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./...' \
+            > evidence/govulncheck-source.json
+          if jq -e 'select(.finding != null)' evidence/govulncheck-source.json >/dev/null; then
+            echo 'A reachable Go vulnerability remains.' >&2
+            exit 1
+          fi
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo 'Vulnerability analysis modified tracked source.' >&2
+            git status --short >&2
+            exit 1
+          fi
+
+      - name: Scan source, artifact, and build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$TRIVY_CACHE"
+          docker pull "$COSIGN_IMAGE"
+          docker pull "$TRIVY_IMAGE"
+          docker image inspect "$TRIVY_IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
+            grep -Fq 'ghcr.io/aquasecurity/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c'
+          docker run --rm "$COSIGN_IMAGE" verify \
+            --certificate-identity-regexp 'https://github\.com/aquasecurity/trivy/\.github/workflows/.+' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --output json "$TRIVY_IMAGE" > evidence/trivy-cosign-verification.json
+          jq -e 'length > 0' evidence/trivy-cosign-verification.json >/dev/null
+          test "$(docker run --rm "$TRIVY_IMAGE" --version)" = 'Version: 0.73.0'
+
+          source_snapshot=$(mktemp -d "${RUNNER_TEMP}/host-api-source.XXXXXX")
+          git archive HEAD | tar -x -C "$source_snapshot"
+          docker run --rm --network none \
+            -v "$source_snapshot:/workspace:ro" \
+            -v "$GITHUB_WORKSPACE/evidence:/evidence" \
+            "$TRIVY_IMAGE" fs --scanners secret --format json \
+            --output /evidence/source-secret-scan.json /workspace
+          rm -rf -- "$source_snapshot"
+
+          docker run --rm \
+            -v "$TRIVY_CACHE:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image --cache-dir /root/.cache/trivy --download-db-only
+          docker run --rm --network none \
+            -v "$TRIVY_CACHE:/root/.cache/trivy" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$GITHUB_WORKSPACE/evidence:/evidence" \
+            "$TRIVY_IMAGE" fs --cache-dir /root/.cache/trivy --skip-db-update --offline-scan \
+            --scanners vuln --severity CRITICAL,HIGH --format json \
+            --output /evidence/source-vulnerability-scan.json /workspace
+          docker run --rm --network none \
+            -v "$TRIVY_CACHE:/root/.cache/trivy" \
+            -v "$GITHUB_WORKSPACE/dist/artifacts:/artifacts:ro" \
+            -v "$GITHUB_WORKSPACE/evidence:/evidence" \
+            "$TRIVY_IMAGE" fs --cache-dir /root/.cache/trivy --skip-db-update --offline-scan \
+            --scanners vuln,secret --severity CRITICAL,HIGH --format json \
+            --output /evidence/artifact-scan.json /artifacts
+          docker run --rm --network none \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$TRIVY_CACHE:/root/.cache/trivy" \
+            -v "$GITHUB_WORKSPACE/evidence:/evidence" \
+            "$TRIVY_IMAGE" image --cache-dir /root/.cache/trivy --skip-db-update --offline-scan \
+            --scanners vuln,secret --severity CRITICAL,HIGH --format json \
+            --output /evidence/builder-scan.json "$DAPPER_IMAGE"
+          docker run --rm --network none \
+            -v "$TRIVY_CACHE:/root/.cache/trivy" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$GITHUB_WORKSPACE/evidence:/evidence" \
+            "$TRIVY_IMAGE" fs --cache-dir /root/.cache/trivy --skip-db-update --offline-scan \
+            --format cyclonedx --output /evidence/source-sbom.cdx.json /workspace
+
+          source_secrets=$(jq '[.Results[]?.Secrets[]?] | length' evidence/source-secret-scan.json)
+          source_findings=$(jq '[.Results[]?.Vulnerabilities[]?] | length' evidence/source-vulnerability-scan.json)
+          artifact_findings=$(jq '[.Results[]?.Vulnerabilities[]?] | length' evidence/artifact-scan.json)
+          artifact_secrets=$(jq '[.Results[]?.Secrets[]?] | length' evidence/artifact-scan.json)
+          builder_findings=$(jq '[.Results[]?.Vulnerabilities[]?] | length' evidence/builder-scan.json)
+          builder_secrets=$(jq '[.Results[]?.Secrets[]?] | length' evidence/builder-scan.json)
+          builder_fixable=$(jq '[.Results[]?.Vulnerabilities[]? | select((.FixedVersion // "") != "")] | length' evidence/builder-scan.json)
+          builder_unfixed_kernel_headers=$(jq '[.Results[]?.Vulnerabilities[]? | select((.FixedVersion // "") == "" and .PkgName == "linux-libc-dev" and .Status == "affected")] | length' evidence/builder-scan.json)
+          builder_unfixed_other=$(jq '[.Results[]?.Vulnerabilities[]? | select((.FixedVersion // "") == "" and (.PkgName != "linux-libc-dev" or .Status != "affected"))] | length' evidence/builder-scan.json)
+          jq -n \
+            --argjson source_secrets "$source_secrets" \
+            --argjson source_findings "$source_findings" \
+            --argjson artifact_findings "$artifact_findings" \
+            --argjson artifact_secrets "$artifact_secrets" \
+            --argjson builder_findings "$builder_findings" \
+            --argjson builder_secrets "$builder_secrets" \
+            --argjson builder_fixable "$builder_fixable" \
+            --argjson builder_unfixed_kernel_headers "$builder_unfixed_kernel_headers" \
+            --argjson builder_unfixed_other "$builder_unfixed_other" \
+            '{source:{secrets:$source_secrets,high_or_critical:$source_findings},artifact:{secrets:$artifact_secrets,high_or_critical:$artifact_findings},builder:{secrets:$builder_secrets,high_or_critical:$builder_findings,fixable_high_or_critical:$builder_fixable,accepted_unfixed_kernel_headers:$builder_unfixed_kernel_headers,unaccepted_unfixed_high_or_critical:$builder_unfixed_other}}' \
+            > evidence/security-counts.json
+          jq -e '
+            .source.secrets == 0 and .source.high_or_critical == 0 and
+            .artifact.secrets == 0 and .artifact.high_or_critical == 0 and
+            .builder.secrets == 0 and .builder.fixable_high_or_critical == 0 and
+            .builder.unaccepted_unfixed_high_or_critical == 0 and
+            .builder.high_or_critical == (.builder.accepted_unfixed_kernel_headers + .builder.fixable_high_or_critical + .builder.unaccepted_unfixed_high_or_critical)
+          ' evidence/security-counts.json >/dev/null
+
+      - name: Record evidence checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find evidence -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z |
+            xargs -0 sha256sum > evidence/SHA256SUMS
+
+      - name: Upload short-lived verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: host-api-security-evidence-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+
+      - name: Remove verification-only images and cache
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf -- "$TRIVY_CACHE"
+          docker image rm -f "$DAPPER_IMAGE" "$TRIVY_IMAGE" "$COSIGN_IMAGE" >/dev/null || true
+          docker builder prune --all --force >/dev/null || true
+          test ! -e "$TRIVY_CACHE"

@@ -1,20 +1,137 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd $(dirname $0)/..
+cd "$(dirname "$0")/.."
 
-if [ -x "$(which wrapdocker)" ]; then
-    wrapdocker > /tmp/docker.log 2>&1
-    docker ps -q
+DOCKER_PID=""
+TEST_CONTAINER=""
+
+cleanup()
+{
+    local exit_code=$?
+    if [ -n "$TEST_CONTAINER" ]; then
+        docker rm -f "$TEST_CONTAINER" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$DOCKER_PID" ]; then
+        kill "$DOCKER_PID" >/dev/null 2>&1 || true
+        wait "$DOCKER_PID" >/dev/null 2>&1 || true
+    fi
+    exit "$exit_code"
+}
+trap cleanup EXIT
+
+# The test daemon runs inside the privileged Dapper container.  Even when the
+# host kernel advertises overlay support, nesting overlay2 on the host's
+# overlay2 filesystem is not portable.  vfs is slower but deterministic and
+# keeps this test daemon completely separate from the host Docker daemon.
+dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs --userland-proxy=false >/tmp/docker.log 2>&1 &
+DOCKER_PID=$!
+for _ in $(seq 1 60); do
+    if docker info >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+if ! docker info >/dev/null 2>&1; then
+    cat /tmp/docker.log
+    exit 1
 fi
+
+create_local_busybox_image()
+{
+    local image=$1
+    local root
+    local applet
+    local target
+
+    root=$(mktemp -d)
+    mkdir -p "$root/bin" "$root/etc" "$root/tmp"
+    chmod 1777 "$root/tmp"
+    cp "$(command -v busybox)" "$root/bin/busybox"
+    chmod 0755 "$root/bin/busybox"
+    for applet in $(busybox --list); do
+        [ "$applet" = busybox ] && continue
+        target="$root/bin/$applet"
+        mkdir -p "$(dirname "$target")"
+        ln -s /bin/busybox "$target"
+    done
+    printf 'root:x:0:0:root:/root:/bin/sh\n' > "$root/etc/passwd"
+    printf 'root:x:0:\n' > "$root/etc/group"
+    tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+        -C "$root" -cf - . | docker import --change 'CMD ["/bin/sh"]' - "$image" >/dev/null
+    rm -rf "$root"
+}
+
+create_local_busybox_image busybox:1
+docker tag busybox:1 busybox:latest
+
+TRUE_CONTAINER=$(docker create busybox:1 /bin/true)
+docker commit --change 'CMD ["/bin/true"]' "$TRUE_CONTAINER" tianon/true:latest >/dev/null
+docker rm "$TRUE_CONTAINER" >/dev/null
+
+LOG_CONTAINER=$(docker create busybox:1 /bin/sh)
+cat > /tmp/pasturestack-host-api-log-fixture.sh <<'EOF'
+#!/bin/sh
+i=1
+while [ "$i" -le 40 ]; do
+    echo "PastureStack host API log fixture $i"
+    i=$((i+1))
+done
+EOF
+chmod +x /tmp/pasturestack-host-api-log-fixture.sh
+docker cp /tmp/pasturestack-host-api-log-fixture.sh "$LOG_CONTAINER:/sleep.sh"
+docker commit --change 'CMD ["/sleep.sh"]' "$LOG_CONTAINER" pasturestack/host-api-log-fixture:latest >/dev/null
+docker rm "$LOG_CONTAINER" >/dev/null
+rm -f /tmp/pasturestack-host-api-log-fixture.sh
 
 if [[ ! -e /host/proc/ ]]; then
     mkdir -p /host
     ln -s /proc /host/proc
 fi
 
-docker run -i -d busybox:1
+TEST_CONTAINER_NAME="pasturestack-host-api-test-$$"
+TEST_CONTAINER=$(docker run -i -d --name "${TEST_CONTAINER_NAME}" --label io.pasturestack.host-api-test=true busybox:1)
 
-go test -timeout 30s -v ./...
+mkdir -p dist
+go test -mod=vendor -race -count=1 -timeout 120s -covermode=atomic \
+    -coverprofile=dist/coverage.out -v ./...
+go tool cover -func=dist/coverage.out > dist/coverage-summary.txt
+cat dist/coverage-summary.txt
+
+require_function_coverage()
+{
+    local pattern=$1
+    local minimum=$2
+    local actual
+
+    actual=$(awk -v pattern="$pattern" '
+        $0 ~ pattern {
+            value=$NF
+            sub(/%$/, "", value)
+            print value
+            found=1
+            exit
+        }
+        END { if (!found) exit 1 }
+    ' dist/coverage-summary.txt) || {
+        echo "Required coverage entry is missing: ${pattern}" >&2
+        exit 1
+    }
+    if ! awk -v actual="$actual" -v minimum="$minimum" \
+        'BEGIN { exit !(actual + 0 >= minimum + 0) }'; then
+        echo "Coverage for ${pattern} is ${actual}%, below ${minimum}%" >&2
+        exit 1
+    fi
+}
+
+require_function_coverage '^total:' 15
+require_function_coverage 'auth/auth.go:.*[[:space:]]Auth[[:space:]]' 60
+require_function_coverage 'auth/token.go:.*[[:space:]]ParseToken[[:space:]]' 80
+require_function_coverage 'auth/token.go:.*[[:space:]]HasScope[[:space:]]' 100
+require_function_coverage 'config/config.go:.*[[:space:]]ParsedPublicKey[[:space:]]' 80
+require_function_coverage 'proxy/proxy.go:.*[[:space:]]validateTargetURL[[:space:]]' 75
+require_function_coverage 'stats/common.go:.*[[:space:]]getContainerIDsClaim[[:space:]]' 100
+require_function_coverage 'stats/common.go:.*[[:space:]]getResourceIDClaim[[:space:]]' 100
+require_function_coverage 'stats/common.go:.*[[:space:]]legacyStatsAuthorization[[:space:]]' 100
 
 echo OK

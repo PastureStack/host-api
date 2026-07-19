@@ -1,6 +1,7 @@
 package events
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -59,36 +60,21 @@ func createTestContainerInternal(client *docker.Client, ip string, useLabel bool
 	return client.CreateContainer(opts)
 }
 
-func pullTestImages(client *docker.Client) {
-	listImageOpts := docker.ListImagesOptions{}
-	images, _ := client.ListImages(listImageOpts)
-	imageMap := map[string]bool{}
-	for _, image := range images {
-		for _, tag := range image.RepoTags {
-			imageMap[tag] = true
+func requireTestImages(client *docker.Client) error {
+	for _, imageName := range []string{"tianon/true:latest", "busybox:latest"} {
+		if _, err := client.InspectImage(imageName); err != nil {
+			return fmt.Errorf("required local test image %s is missing: %v", imageName, err)
 		}
 	}
-
-	var pullImage = func(repo string) {
-		if _, ok := imageMap[repo]; !ok {
-			imageOptions := docker.PullImageOptions{
-				Repository: repo,
-			}
-			imageAuth := docker.AuthConfiguration{}
-			client.PullImage(imageOptions, imageAuth)
-		}
-	}
-
-	imageName := "tianon/true:latest"
-	pullImage(imageName)
-
-	imageName = "busybox:latest"
-	pullImage(imageName)
+	return nil
 }
 
 func TestMain(m *testing.M) {
 	client, _ := NewDockerClient()
-	pullTestImages(client)
+	if err := requireTestImages(client); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	result := m.Run()
 	os.Exit(result)
 }

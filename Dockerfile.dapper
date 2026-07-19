@@ -1,34 +1,85 @@
-FROM ubuntu:16.04
-# FROM arm=armhf/ubuntu:16.04
+FROM docker:29.6.2-cli@sha256:be132a9f282288de4afaf63379dff75711fda0147c6b72a9df44e51841402144 AS snapshot-ca-certificates
+
+FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
+
+COPY --from=snapshot-ca-certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY package/ubuntu-apt.lock /licenses/ubuntu-apt.lock
 
 ARG DAPPER_HOST_ARCH=amd64
-ENV HOST_ARCH=${DAPPER_HOST_ARCH} ARCH=${DAPPER_HOST_ARCH}
+ARG GO_VERSION=1.26.5
+ARG GO_SHA256_amd64=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
+ARG GO_SHA256_arm=6dae9edab81c13bccf962dec15f1fd2ec26c14a6821b4d2c92dab4130c289d7a
 
-RUN apt-get update && \
-    apt-get install -y gcc ca-certificates git wget curl vim less file && \
-    rm -f /bin/sh && ln -s /bin/bash /bin/sh
+ENV DEBIAN_FRONTEND=noninteractive
+ENV HOST_ARCH=${DAPPER_HOST_ARCH} \
+    ARCH=${DAPPER_HOST_ARCH} \
+    GOLANG_ARCH_amd64=amd64 \
+    GOLANG_ARCH_arm=armv6l \
+    GOLANG_ARCH=GOLANG_ARCH_${DAPPER_HOST_ARCH} \
+    GO_SHA256=GO_SHA256_${DAPPER_HOST_ARCH} \
+    GOPATH=/go \
+    PATH=/go/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    SHELL=/bin/bash \
+    GO111MODULE=on \
+    GOTOOLCHAIN=local
 
-ENV GOLANG_ARCH_amd64=amd64 GOLANG_ARCH_arm=armv6l GOLANG_ARCH=GOLANG_ARCH_${ARCH} \
-    GOPATH=/go PATH=/go/bin:/usr/local/go/bin:${PATH} SHELL=/bin/bash
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ENV DOCKER_URL_amd64=https://get.docker.com/builds/Linux/x86_64/docker-1.10.3 \
-    DOCKER_URL_arm=https://github.com/rancher/docker/releases/download/v1.10.3-ros1/docker-1.10.3_arm \
-    DOCKER_URL=DOCKER_URL_${ARCH}
-RUN wget -O - ${!DOCKER_URL} > /usr/bin/docker && chmod +x /usr/bin/docker
+RUN set -eux; \
+    . /licenses/ubuntu-apt.lock; \
+    find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i \
+        -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+        -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' {} +; \
+    printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::http::Pipeline-Depth "0";\nAcquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";\nAcquire::AllowInsecureRepositories "false";\nAPT::Get::AllowUnauthenticated "false";\n' > /etc/apt/apt.conf.d/80pasturestack-retries; \
+    apt-get --snapshot "${UBUNTU_APT_SNAPSHOT}" update; \
+    apt-get --snapshot "${UBUNTU_APT_SNAPSHOT}" install -y --no-install-recommends \
+        bash="${UBUNTU_APT_BASH_VERSION}" \
+        busybox-static="${UBUNTU_APT_BUSYBOX_STATIC_VERSION}" \
+        ca-certificates="${UBUNTU_APT_CA_CERTIFICATES_VERSION}" \
+        containerd="${UBUNTU_APT_CONTAINERD_VERSION}" \
+        curl="${UBUNTU_APT_CURL_VERSION}" \
+        docker.io="${UBUNTU_APT_DOCKER_IO_VERSION}" \
+        file="${UBUNTU_APT_FILE_VERSION}" \
+        gcc="${UBUNTU_APT_GCC_VERSION}" \
+        git="${UBUNTU_APT_GIT_VERSION}" \
+        iproute2="${UBUNTU_APT_IPROUTE2_VERSION}" \
+        iptables="${UBUNTU_APT_IPTABLES_VERSION}" \
+        libc6-dev="${UBUNTU_APT_LIBC6_DEV_VERSION}" \
+        linux-libc-dev="${UBUNTU_APT_LINUX_LIBC_DEV_VERSION}" \
+        make="${UBUNTU_APT_MAKE_VERSION}" \
+        runc="${UBUNTU_APT_RUNC_VERSION}" \
+        tar="${UBUNTU_APT_TAR_VERSION}" \
+        xz-utils="${UBUNTU_APT_XZ_UTILS_VERSION}"; \
+    { \
+        printf 'snapshot\t%s\n' "${UBUNTU_APT_SNAPSHOT}"; \
+        dpkg-query -W -f='${binary:Package}\t${Version}\n' | LC_ALL=C sort; \
+    } > /licenses/DAPPER-UBUNTU-APT-PACKAGES.tsv; \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300 \
+        -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${!GOLANG_ARCH}.tar.gz"; \
+    echo "${!GO_SHA256}  /tmp/go.tgz" | sha256sum -c -; \
+    tar -C /usr/local -xzf /tmp/go.tgz; \
+    rm -f /tmp/go.tgz; \
+    mkdir -p /go/bin /go/src; \
+    go version | grep -F "go${GO_VERSION} linux/"; \
+    docker --version; \
+    dockerd --version; \
+    containerd --version; \
+    runc --version; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    rm -f /usr/bin/pebble; \
+    rm -f /bin/sh; \
+    ln -s /bin/bash /bin/sh
 
-RUN wget -O - https://storage.googleapis.com/golang/go1.7.linux-${!GOLANG_ARCH}.tar.gz | tar -xzf - -C /usr/local && \
-    go get github.com/rancher/trash && go get github.com/golang/lint/golint
+RUN git config --system --add safe.directory '*'
 
-RUN apt-get install -y iptables
-
-COPY ./scripts/wrapdocker /usr/local/bin/
-
-ENV DAPPER_SOURCE /go/src/github.com/rancher/host-api
-ENV DAPPER_OUTPUT ./dist ./bin
-ENV DAPPER_RUN_ARGS --privileged
-ENV TRASH_CACHE ${DAPPER_SOURCE}/.trash-cache
+ENV DAPPER_SOURCE=/go/src/github.com/PastureStack/host-api \
+    DAPPER_OUTPUT="./dist ./bin" \
+    DAPPER_RUN_ARGS="--privileged --cgroupns=host" \
+    GOFLAGS=-mod=vendor
 
 WORKDIR ${DAPPER_SOURCE}
 
+VOLUME "/var/lib/docker"
 ENTRYPOINT ["./scripts/entry"]
 CMD ["ci"]

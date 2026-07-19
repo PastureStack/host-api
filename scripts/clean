@@ -1,5 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd $(dirname $0)/..
+repo_root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$repo_root"
 
-rm -rf build dist bin gopath
+for target in build dist bin gopath; do
+    resolved=$(realpath -m "$repo_root/$target")
+    if [ "$resolved" != "$repo_root/$target" ]; then
+        echo "refusing unsafe clean target: $resolved" >&2
+        exit 1
+    fi
+    rm -rf -- "$resolved"
+done

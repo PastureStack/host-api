@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,26 +14,28 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/common"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/common"
 )
 
 type Handler struct {
 }
 
+const maxInitialProxyMessageBytes = 1 << 20
+
 func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-chan string, response chan<- common.Message) {
 	defer backend.SignalHandlerClosed(key, response)
-	log := log.WithField("url", initialMessage)
+	logger := log.WithField("handler", "container-proxy")
 
 	message, err := readMessage(incomingMessages)
 	if err != nil {
-		log.WithField("error", err).Error("Invalid content")
+		logger.WithField("error", err).Error("Invalid proxy content")
 		return
 	}
 
-	log.Debugf("START %s: %#v", key, message)
+	logger.WithFields(log.Fields{"key": key, "method": message.Method}).Debug("Starting proxied request")
 
 	if message.Hijack {
 		s.doHijack(message, key, incomingMessages, response)
@@ -43,7 +47,7 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 func (s *Handler) doHijack(message *common.HTTPMessage, key string, incomingMessages <-chan string, response chan<- common.Message) {
 	req, err := http.NewRequest(message.Method, message.URL, nil)
 	if err != nil {
-		log.WithField("error", err).Error("Failed to create request")
+		log.Error("Failed to create hijacked proxy request")
 		return
 	}
 	req.Host = message.Host
@@ -58,13 +62,17 @@ func (s *Handler) doHijack(message *common.HTTPMessage, key string, incomingMess
 		return
 	}
 
-	u, err := url.Parse(message.URL)
-	if err != nil {
-		log.WithField("error", err).Errorf("Failed to parse URL %s", message.URL)
+	u := req.URL
+	if err := validateTargetURL(u); err != nil {
+		log.WithField("error", err).Error("Rejected proxy target")
+		return
+	}
+	if content > maxInitialProxyMessageBytes {
+		log.WithField("contentLength", content).Error("Hijacked request body is too large")
 		return
 	}
 
-	conn, err := net.Dial("tcp", u.Host)
+	conn, err := dialProxyTarget(u)
 	if err != nil {
 		log.WithField("error", err).Errorf("Failed to connect to %s", u.Host)
 		return
@@ -84,15 +92,16 @@ func (s *Handler) doHijack(message *common.HTTPMessage, key string, incomingMess
 	}
 
 	if content > 0 {
-		buf := make([]byte, content, content)
-		if c, err := reader.Read(buf); err != nil || int64(c) != content {
+		buf := make([]byte, int(content))
+		if _, err := io.ReadFull(reader, buf); err != nil {
 			log.WithField("error", err).Errorf("Failed to read initial content for %s", u.Host)
+			return
 		}
-		req.Body = ioutil.NopCloser(bytes.NewReader(buf))
+		req.Body = io.NopCloser(bytes.NewReader(buf))
 	}
 
 	if err := req.Write(conn); err != nil {
-		log.WithField("error", err).Errorf("Failed to write request to %s", u.Host)
+		log.WithField("target", proxyLogTarget(u)).Error("Failed to write hijacked proxy request")
 		return
 	}
 
@@ -102,7 +111,7 @@ func (s *Handler) doHijack(message *common.HTTPMessage, key string, incomingMess
 	go func() {
 		defer wg.Done()
 		if _, err := io.Copy(conn, reader); err != nil {
-			log.WithField("error", err).Errorf("Failed to read request %s", u.Host)
+			log.WithField("target", proxyLogTarget(u)).Error("Failed to stream hijacked proxy request")
 		}
 		reader.Close()
 
@@ -113,21 +122,47 @@ func (s *Handler) doHijack(message *common.HTTPMessage, key string, incomingMess
 	}()
 
 	if _, err := io.Copy(writer, conn); err != nil {
-		log.WithField("error", err).Infof("Failed to write response for %s", u.Host)
+		log.WithField("target", proxyLogTarget(u)).Info("Hijacked proxy response stream closed")
 	}
 	writer.Close()
 
 	wg.Wait()
 }
 
+func dialProxyTarget(target *url.URL) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	address := proxyTargetAddress(target)
+	if target.Scheme == "https" {
+		return tls.DialWithDialer(dialer, "tcp", address, &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: target.Hostname(),
+		})
+	}
+	return dialer.Dial("tcp", address)
+}
+
+func proxyTargetAddress(target *url.URL) string {
+	if target.Port() != "" {
+		return target.Host
+	}
+	port := "80"
+	if target.Scheme == "https" {
+		port = "443"
+	}
+	return net.JoinHostPort(target.Hostname(), port)
+}
+
 func setContentLength(req *http.Request) (int64, error) {
 	if lengthString := req.Header.Get("Content-Length"); lengthString != "" {
-		length, err := strconv.Atoi(lengthString)
+		length, err := strconv.ParseInt(lengthString, 10, 64)
 		if err != nil {
-			log.WithField("error", err).Errorf("Failed to parse length %s", lengthString)
+			log.Error("Invalid proxy content length")
 			return 0, err
 		}
-		req.ContentLength = int64(length)
+		if length < 0 {
+			return 0, errors.New("content length must not be negative")
+		}
+		req.ContentLength = length
 	}
 	return req.ContentLength, nil
 }
@@ -140,7 +175,11 @@ func (s *Handler) doHttp(message *common.HTTPMessage, key string, incomingMessag
 		MessageKey: key,
 	})
 	if err != nil {
-		log.WithField("error", err).Error("Failed to create request")
+		log.Error("Failed to create proxy request")
+		return
+	}
+	if err := validateTargetURL(req.URL); err != nil {
+		log.WithField("error", err).Error("Rejected proxy target")
 		return
 	}
 	req.Host = message.Host
@@ -150,12 +189,24 @@ func (s *Handler) doHttp(message *common.HTTPMessage, key string, incomingMessag
 		return
 	}
 
-	client := http.Client{}
-	client.Timeout = 60 * time.Second
+	transport := &http.Transport{
+		DialContext:            (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:    10 * time.Second,
+		ResponseHeaderTimeout:  60 * time.Second,
+		ExpectContinueTimeout:  time.Second,
+		MaxResponseHeaderBytes: 1 << 20,
+	}
+	client := http.Client{
+		Transport: transport,
+		Timeout:   60 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.WithField("error", err).Error("Failed to make request")
+		log.WithField("target", proxyLogTarget(req.URL)).Error("Failed to make proxy request")
 		return
 	}
 	defer resp.Body.Close()
@@ -186,10 +237,43 @@ func (s *Handler) doHttp(message *common.HTTPMessage, key string, incomingMessag
 }
 
 func readMessage(incomingMessages <-chan string) (*common.HTTPMessage, error) {
-	str := <-incomingMessages
+	str, ok := <-incomingMessages
+	if !ok {
+		return nil, io.EOF
+	}
+	if len(str) > maxInitialProxyMessageBytes {
+		return nil, fmt.Errorf("proxy metadata exceeds %d bytes", maxInitialProxyMessageBytes)
+	}
 	var message common.HTTPMessage
 	if err := json.Unmarshal([]byte(str), &message); err != nil {
 		return nil, err
 	}
 	return &message, nil
+}
+
+func validateTargetURL(target *url.URL) error {
+	if target == nil || target.Host == "" {
+		return errors.New("proxy target host is required")
+	}
+	if target.Scheme != "http" && target.Scheme != "https" {
+		return fmt.Errorf("unsupported proxy target scheme %q", target.Scheme)
+	}
+	if target.User != nil {
+		return errors.New("proxy target user information is not allowed")
+	}
+	if target.Fragment != "" {
+		return errors.New("proxy target fragment is not allowed")
+	}
+	return nil
+}
+
+func proxyLogTarget(target *url.URL) string {
+	if target == nil {
+		return "<invalid>"
+	}
+	redacted := *target
+	redacted.User = nil
+	redacted.RawQuery = ""
+	redacted.Fragment = ""
+	return redacted.String()
 }

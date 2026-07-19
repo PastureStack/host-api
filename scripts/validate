@@ -1,20 +1,47 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd $(dirname $0)/..
+cd "$(dirname "$0")/.."
 
-echo Running validation
+echo 'Validating formatting, module integrity, static analysis, and naming policy'
 
-PACKAGES=". $(find -name '*.go' | xargs -I{} dirname {} |  cut -f2 -d/ | sort -u | grep -Ev '(^\.$|.git|.trash-cache|vendor|bin)' | sed -e 's!^!./!' -e 's!$!/...!')"
+for script in scripts/build scripts/ci scripts/clean scripts/collect-go-licenses scripts/entry scripts/package scripts/release scripts/test scripts/validate; do
+	test -x "$script" || { echo "script is not executable: $script" >&2; exit 1; }
+	bash -n "$script"
+done
 
-#echo Running: go vet
-#go vet ${PACKAGES}
-#echo Running: golint
-#for i in ${PACKAGES}; do
-#    if [ -n "$(golint $i | grep -v 'should have comment.*or be unexported' | tee /dev/stderr)" ]; then
-#        failed=true
-#    fi
-#done
-#test -z "$failed"
-echo Running: go fmt
-test -z "$(go fmt ${PACKAGES} | tee /dev/stderr)"
+test ! -e scripts/wrapdocker || {
+    echo 'obsolete privileged Docker wrapper must not be restored' >&2
+    exit 1
+}
+
+grep -Fq 'exactly one numeric semantic-version tag at HEAD' scripts/release
+grep -Fq 'Release tag must be annotated' scripts/release
+grep -Fq 'SHELL ["/bin/bash", "-o", "pipefail", "-c"]' Dockerfile.dapper
+
+unformatted=$(find . -path './vendor' -prune -o -name '*.go' -type f -print0 |
+    xargs -0 gofmt -l)
+if [ -n "$unformatted" ]; then
+    printf 'Unformatted Go files:\n%s\n' "$unformatted" >&2
+    exit 1
+fi
+
+go mod verify
+go mod tidy -diff
+go list -mod=vendor ./... >/dev/null
+go vet -mod=vendor ./...
+
+if grep -R -n -E 'github\.com/(rancher|rancherio)/' \
+    --include='*.go' --include='go.mod' --exclude-dir=vendor .; then
+    echo 'Active source still imports an archived upstream module.' >&2
+    exit 1
+fi
+
+if grep -R -n -E 'v[0-9]+\.[0-9]+\.[0-9]+-[[:alnum:].]+' \
+	--include='*.go' --include='*.sh' --include='*.yml' --include='*.yaml' \
+	--include='*.md' --include='Dockerfile*' --exclude-dir=vendor .; then
+    echo 'A branded or maintenance-suffixed release version remains in active build source.' >&2
+    exit 1
+fi
+
+echo 'Validation passed'

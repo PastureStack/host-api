@@ -1,12 +1,12 @@
 /.dapper
-bin
-host-api
-dist
-gopath
+/bin/
+/host-api
+/dist/
+/gopath/
 
 *.sw[mnop]
-build/
+/build/
 
 .DS_Store
-.trash-cache
-watch-test/
+/.trash-cache
+/watch-test/

@@ -1,24 +1,63 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd $(dirname $0)/..
+umask 022
+
+cd "$(dirname "$0")/.."
 
 ARCH=${ARCH:?"ARCH not set"}
 SUFFIX=""
 [ "${ARCH}" != "amd64" ] && SUFFIX="_${ARCH}"
-CONTENT=$(</proc/sys/kernel/random/uuid)
+RELEASE_VERSION=${VERSION_OVERRIDE:-v0.38.4}
+RELEASE_VERSION=${RELEASE_VERSION#v}
+CONTENT=${PASTURESTACK_PACKAGE_ID:-$(git rev-parse --short=32 HEAD)}
+SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}
+if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo 'VERSION_OVERRIDE must use MAJOR.MINOR.PATCH with no suffix' >&2
+    exit 1
+fi
+case "$CONTENT" in
+    ''|*[!0-9a-f]*) echo "PASTURESTACK_PACKAGE_ID must be lowercase hexadecimal" >&2; exit 1 ;;
+esac
+case "$SOURCE_DATE_EPOCH" in
+    ''|*[!0-9]*) echo "SOURCE_DATE_EPOCH must be an integer" >&2; exit 1 ;;
+esac
 
 rm -rf dist/artifacts
+rm -rf "build/${CONTENT}"
 
-mkdir -p build/${CONTENT}
+if [ ! -x bin/host-api ]; then
+    echo "bin/host-api is missing; run scripts/build before scripts/package" >&2
+    exit 1
+fi
+
+mkdir -p build/${CONTENT}/bin
+mkdir -p build/${CONTENT}/licenses
 mkdir -p dist/artifacts
 
-cp -rf apply.sh bin build/${CONTENT}
+cp -f apply.sh build/${CONTENT}/
+cp -f bin/host-api build/${CONTENT}/bin/
+cp -f LICENSE ORIGIN.md SECURITY.md COMPATIBILITY.md build/${CONTENT}/licenses/
+cp -f go.mod go.sum vendor/modules.txt build/${CONTENT}/licenses/
+bash scripts/collect-go-licenses "build/${CONTENT}/licenses/go-modules"
 
 cd build
 
-sha1sum -b $(find ${CONTENT} -type f) > ${CONTENT}/SHA1SUMS
-sha1sum ${CONTENT}/SHA1SUMS > ${CONTENT}/SHA1SUMSSUM
+find "${CONTENT}" -type f \
+    ! -name SHA1SUMS ! -name SHA1SUMSSUM \
+    ! -name SHA256SUMS ! -name SHA256SUMSSUM -print0 | sort -z | \
+    xargs -0 sha1sum -b > "${CONTENT}/SHA1SUMS"
+sha1sum "${CONTENT}/SHA1SUMS" > "${CONTENT}/SHA1SUMSSUM"
+find "${CONTENT}" -type f \
+    ! -name SHA1SUMS ! -name SHA1SUMSSUM \
+    ! -name SHA256SUMS ! -name SHA256SUMSSUM -print0 | sort -z | \
+    xargs -0 sha256sum -b > "${CONTENT}/SHA256SUMS"
+sha256sum "${CONTENT}/SHA256SUMS" > "${CONTENT}/SHA256SUMSSUM"
 
-tar czf ../dist/artifacts/host-api${SUFFIX}.tar.gz ${CONTENT}
-echo Created dist/artifacts/host-api${SUFFIX}.tar.gz
+archive_tmp=$(mktemp "../dist/artifacts/.host-api-${RELEASE_VERSION}${SUFFIX}.tar.gz.XXXXXX")
+trap 'rm -f "$archive_tmp"' EXIT
+tar --sort=name --format=gnu --mtime="@${SOURCE_DATE_EPOCH}" \
+    --owner=0 --group=0 --numeric-owner -cf - "${CONTENT}" | gzip -n > "$archive_tmp"
+mv "$archive_tmp" "../dist/artifacts/host-api-${RELEASE_VERSION}${SUFFIX}.tar.gz"
+trap - EXIT
+echo Created dist/artifacts/host-api-${RELEASE_VERSION}${SUFFIX}.tar.gz

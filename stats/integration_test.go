@@ -10,16 +10,15 @@ import (
 	"testing"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/gorilla/websocket"
+	log "github.com/sirupsen/logrus"
 
 	client "github.com/fsouza/go-dockerclient"
 
-	"github.com/rancher/host-api/config"
-	"github.com/rancher/host-api/testutils"
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/proxy"
-	wsp_utils "github.com/rancher/websocket-proxy/testutils"
+	"github.com/PastureStack/host-api/config"
+	"github.com/PastureStack/host-api/testutils"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/proxy"
 )
 
 var privateKey interface{}
@@ -37,7 +36,7 @@ func TestContainerStats(t *testing.T) {
 	}
 	ctrs := []client.APIContainers{}
 	for _, ctr := range allCtrs {
-		if strings.HasPrefix(ctr.Image, "busybox:1") {
+		if strings.HasPrefix(ctr.Image, "busybox:1") && hasNamePrefix(ctr.Names, "/pasturestack-host-api-test-") {
 			ctrs = append(ctrs, ctr)
 		}
 	}
@@ -60,8 +59,8 @@ func TestContainerStats(t *testing.T) {
 
 Outer:
 	for i := 0; i < 5; i++ {
-		token := wsp_utils.CreateTokenWithPayload(payload, privateKey)
-		url := "ws://localhost:1111/v1/containerstats?token=" + token
+		token := testutils.CreateTokenWithPayload(payload, privateKey)
+		url := "ws://127.0.0.1:1111/v1/containerstats?token=" + token
 		ws, _, err := dialer.Dial(url, headers)
 		if err != nil {
 			t.Fatal(err)
@@ -87,6 +86,15 @@ Outer:
 	}
 
 	log.Fatal(io.EOF)
+}
+
+func hasNamePrefix(names []string, prefix string) bool {
+	for _, name := range names {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // This test wont work in dind. Disabling it for now, until I figure out a solution
@@ -116,8 +124,8 @@ func unTestContainerStatSingleContainer(t *testing.T) {
 
 	log.Info(ctrs[0].ID)
 
-	token := wsp_utils.CreateTokenWithPayload(payload, privateKey)
-	url := "ws://localhost:1111/v1/containerstats/" + ctrs[0].ID + "?token=" + token
+	token := testutils.CreateTokenWithPayload(payload, privateKey)
+	url := "ws://127.0.0.1:1111/v1/containerstats/" + ctrs[0].ID + "?token=" + token
 	ws, _, err := dialer.Dial(url, headers)
 	if err != nil {
 		t.Fatal(err)
@@ -145,8 +153,8 @@ func TestHostStats(t *testing.T) {
 		"resourceId": "1h1",
 	}
 
-	token := wsp_utils.CreateTokenWithPayload(payload, privateKey)
-	url := "ws://localhost:1111/v1/hoststats?token=" + token
+	token := testutils.CreateTokenWithPayload(payload, privateKey)
+	url := "ws://127.0.0.1:1111/v1/hoststats?token=" + token
 	ws, _, err := dialer.Dial(url, headers)
 	if err != nil {
 		t.Fatal(err)
@@ -168,8 +176,11 @@ func TestHostStats(t *testing.T) {
 func TestHostStatsLegacy(t *testing.T) {
 	dialer := &websocket.Dialer{}
 	headers := http.Header{}
-	token := wsp_utils.CreateToken("1", privateKey)
-	url := "ws://localhost:1111/v1/stats?token=" + token
+	token := testutils.CreateTokenWithPayload(map[string]interface{}{
+		"hostUuid":   "1",
+		"resourceId": "1h1",
+	}, privateKey)
+	url := "ws://127.0.0.1:1111/v1/stats?token=" + token
 	ws, _, err := dialer.Dial(url, headers)
 	if err != nil {
 		t.Fatal(err)
@@ -194,40 +205,47 @@ func TestHostStatsLegacy(t *testing.T) {
 	}
 }
 
-func setupWebsocketProxy() {
+func setupWebsocketProxy() error {
 	config.Parse()
 	config.Config.NumStats = 1
+	config.Config.HostUuid = "1"
 	config.Config.CAdvisorUrl = "http://localhost:8080"
-	config.Config.ParsedPublicKey = wsp_utils.ParseTestPublicKey()
-	privateKey = wsp_utils.ParseTestPrivateKey()
+	config.Config.ParsedPublicKey = testutils.ParseTestPublicKey()
+	privateKey = testutils.ParseTestPrivateKey()
 
-	conf := testutils.GetTestConfig(":1111")
+	conf := testutils.GetTestConfig("127.0.0.1:1111")
 	p := &proxy.Starter{
 		BackendPaths:  []string{"/v1/connectbackend"},
 		FrontendPaths: []string{"/v1/{logs:logs}/", "/v1/{stats:stats}", "/v1/{stats:stats}/{statsid}", "/v1/exec/"},
-		StatsPaths: []string{"/v1/{hoststats:hoststats(\\/project)?(\\/)?}",
-			"/v1/{containerstats:containerstats(\\/service)?(\\/)?}",
+		StatsPaths: []string{"/v1/{hoststats:hoststats(?:\\/project)?(?:\\/)?}",
+			"/v1/{containerstats:containerstats(?:\\/service)?(?:\\/)?}",
 			"/v1/{containerstats:containerstats}/{containerid}"},
 		Config: conf,
 	}
 
-	log.Infof("Starting websocket proxy. Listening on [%s], Proxying to cattle API at [%s].",
-		conf.ListenAddr, conf.CattleAddr)
+	log.Infof("Starting websocket proxy. Listening on [%s], proxying to the control-platform API at [%s].",
+		conf.ListenAddr, conf.PlatformAddr)
 
 	go p.StartProxy()
-	time.Sleep(time.Second)
-	signedToken := wsp_utils.CreateBackendToken("1", privateKey)
+	if err := testutils.WaitForTCP(conf.ListenAddr, 5*time.Second); err != nil {
+		return err
+	}
+	signedToken := testutils.CreateBackendToken("1", privateKey)
 
 	handlers := make(map[string]backend.Handler)
 	handlers["/v1/stats/"] = &StatsHandler{}
 	handlers["/v1/hoststats/"] = &HostStatsHandler{}
 	handlers["/v1/containerstats/"] = &ContainerStatsHandler{}
-	go backend.ConnectToProxy("ws://localhost:1111/v1/connectbackend?token="+signedToken, handlers)
+	go backend.ConnectToProxy("ws://127.0.0.1:1111/v1/connectbackend?token="+signedToken, handlers)
 	time.Sleep(300 * time.Millisecond)
+	return nil
 }
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-	setupWebsocketProxy()
+	if err := setupWebsocketProxy(); err != nil {
+		log.Errorf("Could not start the stats test proxy: %v", err)
+		os.Exit(1)
+	}
 	os.Exit(m.Run())
 }

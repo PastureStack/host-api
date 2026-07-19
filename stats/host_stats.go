@@ -6,11 +6,11 @@ import (
 	"net/url"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 
-	"github.com/rancher/host-api/config"
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/common"
+	"github.com/PastureStack/host-api/auth"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/common"
 )
 
 type HostStatsHandler struct {
@@ -21,23 +21,21 @@ func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMes
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
-		log.WithFields(log.Fields{"error": err, "message": initialMessage}).Error("Couldn't parse url from message.")
+		log.Error("Could not parse host statistics request URL.")
 		return
 	}
 
 	tokenString := requestUrl.Query().Get("token")
 
-	resourceId := ""
-
-	token, err := parseRequestToken(tokenString, config.Config.ParsedPublicKey)
-	if err == nil {
-		resourceIdInterface, found := token.Claims["resourceId"]
-		if found {
-			resourceIdVal, ok := resourceIdInterface.(string)
-			if ok {
-				resourceId = resourceIdVal
-			}
-		}
+	token, valid := auth.GetAndCheckToken(tokenString)
+	if !valid {
+		log.Error("Invalid host statistics token.")
+		return
+	}
+	resourceId, authorized := getResourceIDClaim(token)
+	if !authorized {
+		log.Error("Host statistics token is missing a valid resource claim.")
+		return
 	}
 
 	reader, writer := io.Pipe()
@@ -54,6 +52,7 @@ func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMes
 
 	go func(r *io.PipeReader) {
 		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			text := scanner.Text()
 			message := common.Message{
@@ -98,6 +97,4 @@ func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMes
 		time.Sleep(1 * time.Second)
 		count = 1
 	}
-
-	return
 }

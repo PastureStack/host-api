@@ -1,71 +1,60 @@
-// Copyright 2015 go-dockerclient authors. All rights reserved.
+// Copyright 2013 go-dockerclient authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
 package docker
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
-)
 
-// ListContainersOptions specify parameters to the ListContainers function.
-//
-// See http://goo.gl/6Y4Gz7 for more details.
-type ListContainersOptions struct {
-	All     bool
-	Size    bool
-	Limit   int
-	Since   string
-	Before  string
-	Filters map[string][]string
-}
+	units "github.com/docker/go-units"
+)
 
 // APIPort is a type that represents a port mapping returned by the Docker API
 type APIPort struct {
-	PrivatePort int64  `json:"PrivatePort,omitempty" yaml:"PrivatePort,omitempty"`
-	PublicPort  int64  `json:"PublicPort,omitempty" yaml:"PublicPort,omitempty"`
-	Type        string `json:"Type,omitempty" yaml:"Type,omitempty"`
-	IP          string `json:"IP,omitempty" yaml:"IP,omitempty"`
+	PrivatePort int64  `json:"PrivatePort,omitempty" yaml:"PrivatePort,omitempty" toml:"PrivatePort,omitempty"`
+	PublicPort  int64  `json:"PublicPort,omitempty" yaml:"PublicPort,omitempty" toml:"PublicPort,omitempty"`
+	Type        string `json:"Type,omitempty" yaml:"Type,omitempty" toml:"Type,omitempty"`
+	IP          string `json:"IP,omitempty" yaml:"IP,omitempty" toml:"IP,omitempty"`
 }
 
-// APIContainers represents a container.
-//
-// See http://goo.gl/QeFH7U for more details.
+// APIMount represents a mount point for a container.
+type APIMount struct {
+	Name        string `json:"Name,omitempty" yaml:"Name,omitempty" toml:"Name,omitempty"`
+	Source      string `json:"Source,omitempty" yaml:"Source,omitempty" toml:"Source,omitempty"`
+	Destination string `json:"Destination,omitempty" yaml:"Destination,omitempty" toml:"Destination,omitempty"`
+	Driver      string `json:"Driver,omitempty" yaml:"Driver,omitempty" toml:"Driver,omitempty"`
+	Mode        string `json:"Mode,omitempty" yaml:"Mode,omitempty" toml:"Mode,omitempty"`
+	RW          bool   `json:"RW,omitempty" yaml:"RW,omitempty" toml:"RW,omitempty"`
+	Propagation string `json:"Propagation,omitempty" yaml:"Propagation,omitempty" toml:"Propagation,omitempty"`
+	Type        string `json:"Type,omitempty" yaml:"Type,omitempty" toml:"Type,omitempty"`
+}
+
+// APIContainers represents each container in the list returned by
+// ListContainers.
 type APIContainers struct {
-	ID         string    `json:"Id" yaml:"Id"`
-	Image      string    `json:"Image,omitempty" yaml:"Image,omitempty"`
-	Command    string    `json:"Command,omitempty" yaml:"Command,omitempty"`
-	Created    int64     `json:"Created,omitempty" yaml:"Created,omitempty"`
-	Status     string    `json:"Status,omitempty" yaml:"Status,omitempty"`
-	Ports      []APIPort `json:"Ports,omitempty" yaml:"Ports,omitempty"`
-	SizeRw     int64     `json:"SizeRw,omitempty" yaml:"SizeRw,omitempty"`
-	SizeRootFs int64     `json:"SizeRootFs,omitempty" yaml:"SizeRootFs,omitempty"`
-	Names      []string  `json:"Names,omitempty" yaml:"Names,omitempty"`
+	ID         string            `json:"Id" yaml:"Id" toml:"Id"`
+	Image      string            `json:"Image,omitempty" yaml:"Image,omitempty" toml:"Image,omitempty"`
+	Command    string            `json:"Command,omitempty" yaml:"Command,omitempty" toml:"Command,omitempty"`
+	Created    int64             `json:"Created,omitempty" yaml:"Created,omitempty" toml:"Created,omitempty"`
+	State      string            `json:"State,omitempty" yaml:"State,omitempty" toml:"State,omitempty"`
+	Status     string            `json:"Status,omitempty" yaml:"Status,omitempty" toml:"Status,omitempty"`
+	Ports      []APIPort         `json:"Ports,omitempty" yaml:"Ports,omitempty" toml:"Ports,omitempty"`
+	SizeRw     int64             `json:"SizeRw,omitempty" yaml:"SizeRw,omitempty" toml:"SizeRw,omitempty"`
+	SizeRootFs int64             `json:"SizeRootFs,omitempty" yaml:"SizeRootFs,omitempty" toml:"SizeRootFs,omitempty"`
+	Names      []string          `json:"Names,omitempty" yaml:"Names,omitempty" toml:"Names,omitempty"`
+	Labels     map[string]string `json:"Labels,omitempty" yaml:"Labels,omitempty" toml:"Labels,omitempty"`
+	Networks   NetworkList       `json:"NetworkSettings" yaml:"NetworkSettings,omitempty" toml:"NetworkSettings,omitempty"`
+	Mounts     []APIMount        `json:"Mounts,omitempty" yaml:"Mounts,omitempty" toml:"Mounts,omitempty"`
 }
 
-// ListContainers returns a slice of containers matching the given criteria.
-//
-// See http://goo.gl/6Y4Gz7 for more details.
-func (c *Client) ListContainers(opts ListContainersOptions) ([]APIContainers, error) {
-	path := "/containers/json?" + queryString(opts)
-	body, _, err := c.do("GET", path, doOptions{})
-	if err != nil {
-		return nil, err
-	}
-	var containers []APIContainers
-	err = json.Unmarshal(body, &containers)
-	if err != nil {
-		return nil, err
-	}
-	return containers, nil
+// NetworkList encapsulates a map of networks, as returned by the Docker API in
+// ListContainers.
+type NetworkList struct {
+	Networks map[string]ContainerNetwork `json:"Networks" yaml:"Networks,omitempty" toml:"Networks,omitempty"`
 }
 
 // Port represents the port number and the protocol, in the form
@@ -86,49 +75,139 @@ func (p Port) Proto() string {
 	return parts[1]
 }
 
-// State represents the state of a container.
-type State struct {
-	Running    bool      `json:"Running,omitempty" yaml:"Running,omitempty"`
-	Paused     bool      `json:"Paused,omitempty" yaml:"Paused,omitempty"`
-	Restarting bool      `json:"Restarting,omitempty" yaml:"Restarting,omitempty"`
-	OOMKilled  bool      `json:"OOMKilled,omitempty" yaml:"OOMKilled,omitempty"`
-	Pid        int       `json:"Pid,omitempty" yaml:"Pid,omitempty"`
-	ExitCode   int       `json:"ExitCode,omitempty" yaml:"ExitCode,omitempty"`
-	Error      string    `json:"Error,omitempty" yaml:"Error,omitempty"`
-	StartedAt  time.Time `json:"StartedAt,omitempty" yaml:"StartedAt,omitempty"`
-	FinishedAt time.Time `json:"FinishedAt,omitempty" yaml:"FinishedAt,omitempty"`
+// HealthCheck represents one check of health.
+type HealthCheck struct {
+	Start    time.Time `json:"Start" yaml:"Start,omitempty" toml:"Start,omitempty"`
+	End      time.Time `json:"End" yaml:"End,omitempty" toml:"End,omitempty"`
+	ExitCode int       `json:"ExitCode,omitempty" yaml:"ExitCode,omitempty" toml:"ExitCode,omitempty"`
+	Output   string    `json:"Output,omitempty" yaml:"Output,omitempty" toml:"Output,omitempty"`
 }
 
-// String returns the string representation of a state.
+// Health represents the health of a container.
+type Health struct {
+	Status        string        `json:"Status,omitempty" yaml:"Status,omitempty" toml:"Status,omitempty"`
+	FailingStreak int           `json:"FailingStreak,omitempty" yaml:"FailingStreak,omitempty" toml:"FailingStreak,omitempty"`
+	Log           []HealthCheck `json:"Log,omitempty" yaml:"Log,omitempty" toml:"Log,omitempty"`
+}
+
+// State represents the state of a container.
+type State struct {
+	Status            string    `json:"Status,omitempty" yaml:"Status,omitempty" toml:"Status,omitempty"`
+	Running           bool      `json:"Running,omitempty" yaml:"Running,omitempty" toml:"Running,omitempty"`
+	Paused            bool      `json:"Paused,omitempty" yaml:"Paused,omitempty" toml:"Paused,omitempty"`
+	Restarting        bool      `json:"Restarting,omitempty" yaml:"Restarting,omitempty" toml:"Restarting,omitempty"`
+	OOMKilled         bool      `json:"OOMKilled,omitempty" yaml:"OOMKilled,omitempty" toml:"OOMKilled,omitempty"`
+	RemovalInProgress bool      `json:"RemovalInProgress,omitempty" yaml:"RemovalInProgress,omitempty" toml:"RemovalInProgress,omitempty"`
+	Dead              bool      `json:"Dead,omitempty" yaml:"Dead,omitempty" toml:"Dead,omitempty"`
+	Pid               int       `json:"Pid,omitempty" yaml:"Pid,omitempty" toml:"Pid,omitempty"`
+	ExitCode          int       `json:"ExitCode,omitempty" yaml:"ExitCode,omitempty" toml:"ExitCode,omitempty"`
+	Error             string    `json:"Error,omitempty" yaml:"Error,omitempty" toml:"Error,omitempty"`
+	StartedAt         time.Time `json:"StartedAt" yaml:"StartedAt,omitempty" toml:"StartedAt,omitempty"`
+	FinishedAt        time.Time `json:"FinishedAt" yaml:"FinishedAt,omitempty" toml:"FinishedAt,omitempty"`
+	Health            Health    `json:"Health" yaml:"Health,omitempty" toml:"Health,omitempty"`
+}
+
+// String returns a human-readable description of the state
 func (s *State) String() string {
+	if s.Running {
+		if s.Paused {
+			return fmt.Sprintf("Up %s (Paused)", units.HumanDuration(time.Now().UTC().Sub(s.StartedAt)))
+		}
+		if s.Restarting {
+			return fmt.Sprintf("Restarting (%d) %s ago", s.ExitCode, units.HumanDuration(time.Now().UTC().Sub(s.FinishedAt)))
+		}
+
+		return fmt.Sprintf("Up %s", units.HumanDuration(time.Now().UTC().Sub(s.StartedAt)))
+	}
+
+	if s.RemovalInProgress {
+		return "Removal In Progress"
+	}
+
+	if s.Dead {
+		return "Dead"
+	}
+
+	if s.StartedAt.IsZero() {
+		return "Created"
+	}
+
+	if s.FinishedAt.IsZero() {
+		return ""
+	}
+
+	return fmt.Sprintf("Exited (%d) %s ago", s.ExitCode, units.HumanDuration(time.Now().UTC().Sub(s.FinishedAt)))
+}
+
+// StateString returns a single string to describe state
+func (s *State) StateString() string {
 	if s.Running {
 		if s.Paused {
 			return "paused"
 		}
-		return fmt.Sprintf("Up %s", time.Now().UTC().Sub(s.StartedAt))
+		if s.Restarting {
+			return "restarting"
+		}
+		return "running"
 	}
-	return fmt.Sprintf("Exit %d", s.ExitCode)
+
+	if s.Dead {
+		return "dead"
+	}
+
+	if s.StartedAt.IsZero() {
+		return "created"
+	}
+
+	return "exited"
 }
 
 // PortBinding represents the host/container port mapping as returned in the
 // `docker inspect` json
 type PortBinding struct {
-	HostIP   string `json:"HostIP,omitempty" yaml:"HostIP,omitempty"`
-	HostPort string `json:"HostPort,omitempty" yaml:"HostPort,omitempty"`
+	HostIP   string `json:"HostIp,omitempty" yaml:"HostIp,omitempty" toml:"HostIp,omitempty"`
+	HostPort string `json:"HostPort,omitempty" yaml:"HostPort,omitempty" toml:"HostPort,omitempty"`
 }
 
 // PortMapping represents a deprecated field in the `docker inspect` output,
 // and its value as found in NetworkSettings should always be nil
 type PortMapping map[string]string
 
+// ContainerNetwork represents the networking settings of a container per network.
+type ContainerNetwork struct {
+	Aliases             []string `json:"Aliases,omitempty" yaml:"Aliases,omitempty" toml:"Aliases,omitempty"`
+	MacAddress          string   `json:"MacAddress,omitempty" yaml:"MacAddress,omitempty" toml:"MacAddress,omitempty"`
+	GlobalIPv6PrefixLen int      `json:"GlobalIPv6PrefixLen,omitempty" yaml:"GlobalIPv6PrefixLen,omitempty" toml:"GlobalIPv6PrefixLen,omitempty"`
+	GlobalIPv6Address   string   `json:"GlobalIPv6Address,omitempty" yaml:"GlobalIPv6Address,omitempty" toml:"GlobalIPv6Address,omitempty"`
+	IPv6Gateway         string   `json:"IPv6Gateway,omitempty" yaml:"IPv6Gateway,omitempty" toml:"IPv6Gateway,omitempty"`
+	IPPrefixLen         int      `json:"IPPrefixLen,omitempty" yaml:"IPPrefixLen,omitempty" toml:"IPPrefixLen,omitempty"`
+	IPAddress           string   `json:"IPAddress,omitempty" yaml:"IPAddress,omitempty" toml:"IPAddress,omitempty"`
+	Gateway             string   `json:"Gateway,omitempty" yaml:"Gateway,omitempty" toml:"Gateway,omitempty"`
+	EndpointID          string   `json:"EndpointID,omitempty" yaml:"EndpointID,omitempty" toml:"EndpointID,omitempty"`
+	NetworkID           string   `json:"NetworkID,omitempty" yaml:"NetworkID,omitempty" toml:"NetworkID,omitempty"`
+	DNSNames            []string `json:"DNSNames,omitempty" yaml:"DNSNames,omitempty" toml:"DNSNames,omitempty"`
+}
+
 // NetworkSettings contains network-related information about a container
 type NetworkSettings struct {
-	IPAddress   string                 `json:"IPAddress,omitempty" yaml:"IPAddress,omitempty"`
-	IPPrefixLen int                    `json:"IPPrefixLen,omitempty" yaml:"IPPrefixLen,omitempty"`
-	Gateway     string                 `json:"Gateway,omitempty" yaml:"Gateway,omitempty"`
-	Bridge      string                 `json:"Bridge,omitempty" yaml:"Bridge,omitempty"`
-	PortMapping map[string]PortMapping `json:"PortMapping,omitempty" yaml:"PortMapping,omitempty"`
-	Ports       map[Port][]PortBinding `json:"Ports,omitempty" yaml:"Ports,omitempty"`
+	Networks               map[string]ContainerNetwork `json:"Networks,omitempty" yaml:"Networks,omitempty" toml:"Networks,omitempty"`
+	IPAddress              string                      `json:"IPAddress,omitempty" yaml:"IPAddress,omitempty" toml:"IPAddress,omitempty"`
+	IPPrefixLen            int                         `json:"IPPrefixLen,omitempty" yaml:"IPPrefixLen,omitempty" toml:"IPPrefixLen,omitempty"`
+	MacAddress             string                      `json:"MacAddress,omitempty" yaml:"MacAddress,omitempty" toml:"MacAddress,omitempty"`
+	Gateway                string                      `json:"Gateway,omitempty" yaml:"Gateway,omitempty" toml:"Gateway,omitempty"`
+	Bridge                 string                      `json:"Bridge,omitempty" yaml:"Bridge,omitempty" toml:"Bridge,omitempty"`
+	PortMapping            map[string]PortMapping      `json:"PortMapping,omitempty" yaml:"PortMapping,omitempty" toml:"PortMapping,omitempty"`
+	Ports                  map[Port][]PortBinding      `json:"Ports,omitempty" yaml:"Ports,omitempty" toml:"Ports,omitempty"`
+	NetworkID              string                      `json:"NetworkID,omitempty" yaml:"NetworkID,omitempty" toml:"NetworkID,omitempty"`
+	EndpointID             string                      `json:"EndpointID,omitempty" yaml:"EndpointID,omitempty" toml:"EndpointID,omitempty"`
+	SandboxKey             string                      `json:"SandboxKey,omitempty" yaml:"SandboxKey,omitempty" toml:"SandboxKey,omitempty"`
+	GlobalIPv6Address      string                      `json:"GlobalIPv6Address,omitempty" yaml:"GlobalIPv6Address,omitempty" toml:"GlobalIPv6Address,omitempty"`
+	GlobalIPv6PrefixLen    int                         `json:"GlobalIPv6PrefixLen,omitempty" yaml:"GlobalIPv6PrefixLen,omitempty" toml:"GlobalIPv6PrefixLen,omitempty"`
+	IPv6Gateway            string                      `json:"IPv6Gateway,omitempty" yaml:"IPv6Gateway,omitempty" toml:"IPv6Gateway,omitempty"`
+	LinkLocalIPv6Address   string                      `json:"LinkLocalIPv6Address,omitempty" yaml:"LinkLocalIPv6Address,omitempty" toml:"LinkLocalIPv6Address,omitempty"`
+	LinkLocalIPv6PrefixLen int                         `json:"LinkLocalIPv6PrefixLen,omitempty" yaml:"LinkLocalIPv6PrefixLen,omitempty" toml:"LinkLocalIPv6PrefixLen,omitempty"`
+	SecondaryIPAddresses   []string                    `json:"SecondaryIPAddresses,omitempty" yaml:"SecondaryIPAddresses,omitempty" toml:"SecondaryIPAddresses,omitempty"`
+	SecondaryIPv6Addresses []string                    `json:"SecondaryIPv6Addresses,omitempty" yaml:"SecondaryIPv6Addresses,omitempty" toml:"SecondaryIPv6Addresses,omitempty"`
 }
 
 // PortMappingAPI translates the port mappings as contained in NetworkSettings
@@ -139,8 +218,8 @@ func (settings *NetworkSettings) PortMappingAPI() []APIPort {
 		p, _ := parsePort(port.Port())
 		if len(bindings) == 0 {
 			mapping = append(mapping, APIPort{
-				PublicPort: int64(p),
-				Type:       port.Proto(),
+				PrivatePort: int64(p),
+				Type:        port.Proto(),
 			})
 			continue
 		}
@@ -170,770 +249,323 @@ func parsePort(rawPort string) (int, error) {
 // Config does not contain the options that are specific to starting a container on a
 // given host.  Those are contained in HostConfig
 type Config struct {
-	Hostname        string              `json:"Hostname,omitempty" yaml:"Hostname,omitempty"`
-	Domainname      string              `json:"Domainname,omitempty" yaml:"Domainname,omitempty"`
-	User            string              `json:"User,omitempty" yaml:"User,omitempty"`
-	Memory          int64               `json:"Memory,omitempty" yaml:"Memory,omitempty"`
-	MemorySwap      int64               `json:"MemorySwap,omitempty" yaml:"MemorySwap,omitempty"`
-	CPUShares       int64               `json:"CpuShares,omitempty" yaml:"CpuShares,omitempty"`
-	CPUSet          string              `json:"Cpuset,omitempty" yaml:"Cpuset,omitempty"`
-	AttachStdin     bool                `json:"AttachStdin,omitempty" yaml:"AttachStdin,omitempty"`
-	AttachStdout    bool                `json:"AttachStdout,omitempty" yaml:"AttachStdout,omitempty"`
-	AttachStderr    bool                `json:"AttachStderr,omitempty" yaml:"AttachStderr,omitempty"`
-	PortSpecs       []string            `json:"PortSpecs,omitempty" yaml:"PortSpecs,omitempty"`
-	ExposedPorts    map[Port]struct{}   `json:"ExposedPorts,omitempty" yaml:"ExposedPorts,omitempty"`
-	Tty             bool                `json:"Tty,omitempty" yaml:"Tty,omitempty"`
-	OpenStdin       bool                `json:"OpenStdin,omitempty" yaml:"OpenStdin,omitempty"`
-	StdinOnce       bool                `json:"StdinOnce,omitempty" yaml:"StdinOnce,omitempty"`
-	Env             []string            `json:"Env,omitempty" yaml:"Env,omitempty"`
-	Cmd             []string            `json:"Cmd,omitempty" yaml:"Cmd,omitempty"`
-	DNS             []string            `json:"Dns,omitempty" yaml:"Dns,omitempty"` // For Docker API v1.9 and below only
-	Image           string              `json:"Image,omitempty" yaml:"Image,omitempty"`
-	Volumes         map[string]struct{} `json:"Volumes,omitempty" yaml:"Volumes,omitempty"`
-	VolumesFrom     string              `json:"VolumesFrom,omitempty" yaml:"VolumesFrom,omitempty"`
-	WorkingDir      string              `json:"WorkingDir,omitempty" yaml:"WorkingDir,omitempty"`
-	Entrypoint      []string            `json:"Entrypoint,omitempty" yaml:"Entrypoint,omitempty"`
-	NetworkDisabled bool                `json:"NetworkDisabled,omitempty" yaml:"NetworkDisabled,omitempty"`
-	SecurityOpts    []string            `json:"SecurityOpts,omitempty" yaml:"SecurityOpts,omitempty"`
-	OnBuild         []string            `json:"OnBuild,omitempty" yaml:"OnBuild,omitempty"`
-	Labels          map[string]string   `json:"Labels,omitempty" yaml:"Labels,omitempty"`
+	Hostname          string              `json:"Hostname,omitempty" yaml:"Hostname,omitempty" toml:"Hostname,omitempty"`
+	Domainname        string              `json:"Domainname,omitempty" yaml:"Domainname,omitempty" toml:"Domainname,omitempty"`
+	User              string              `json:"User,omitempty" yaml:"User,omitempty" toml:"User,omitempty"`
+	Memory            int64               `json:"Memory,omitempty" yaml:"Memory,omitempty" toml:"Memory,omitempty"`
+	MemorySwap        int64               `json:"MemorySwap,omitempty" yaml:"MemorySwap,omitempty" toml:"MemorySwap,omitempty"`
+	MemoryReservation int64               `json:"MemoryReservation,omitempty" yaml:"MemoryReservation,omitempty" toml:"MemoryReservation,omitempty"`
+	KernelMemory      int64               `json:"KernelMemory,omitempty" yaml:"KernelMemory,omitempty" toml:"KernelMemory,omitempty"`
+	CPUShares         int64               `json:"CpuShares,omitempty" yaml:"CpuShares,omitempty" toml:"CpuShares,omitempty"`
+	CPUSet            string              `json:"Cpuset,omitempty" yaml:"Cpuset,omitempty" toml:"Cpuset,omitempty"`
+	PortSpecs         []string            `json:"PortSpecs,omitempty" yaml:"PortSpecs,omitempty" toml:"PortSpecs,omitempty"`
+	ExposedPorts      map[Port]struct{}   `json:"ExposedPorts,omitempty" yaml:"ExposedPorts,omitempty" toml:"ExposedPorts,omitempty"`
+	PublishService    string              `json:"PublishService,omitempty" yaml:"PublishService,omitempty" toml:"PublishService,omitempty"`
+	StopSignal        string              `json:"StopSignal,omitempty" yaml:"StopSignal,omitempty" toml:"StopSignal,omitempty"`
+	StopTimeout       int                 `json:"StopTimeout,omitempty" yaml:"StopTimeout,omitempty" toml:"StopTimeout,omitempty"`
+	Env               []string            `json:"Env,omitempty" yaml:"Env,omitempty" toml:"Env,omitempty"`
+	Cmd               []string            `json:"Cmd" yaml:"Cmd" toml:"Cmd"`
+	Shell             []string            `json:"Shell,omitempty" yaml:"Shell,omitempty" toml:"Shell,omitempty"`
+	Healthcheck       *HealthConfig       `json:"Healthcheck,omitempty" yaml:"Healthcheck,omitempty" toml:"Healthcheck,omitempty"`
+	DNS               []string            `json:"Dns,omitempty" yaml:"Dns,omitempty" toml:"Dns,omitempty"` // For Docker API v1.9 and below only
+	Image             string              `json:"Image,omitempty" yaml:"Image,omitempty" toml:"Image,omitempty"`
+	Volumes           map[string]struct{} `json:"Volumes,omitempty" yaml:"Volumes,omitempty" toml:"Volumes,omitempty"`
+	VolumeDriver      string              `json:"VolumeDriver,omitempty" yaml:"VolumeDriver,omitempty" toml:"VolumeDriver,omitempty"`
+	WorkingDir        string              `json:"WorkingDir,omitempty" yaml:"WorkingDir,omitempty" toml:"WorkingDir,omitempty"`
+	MacAddress        string              `json:"MacAddress,omitempty" yaml:"MacAddress,omitempty" toml:"MacAddress,omitempty"`
+	Entrypoint        []string            `json:"Entrypoint" yaml:"Entrypoint" toml:"Entrypoint"`
+	SecurityOpts      []string            `json:"SecurityOpts,omitempty" yaml:"SecurityOpts,omitempty" toml:"SecurityOpts,omitempty"`
+	OnBuild           []string            `json:"OnBuild,omitempty" yaml:"OnBuild,omitempty" toml:"OnBuild,omitempty"`
+	Mounts            []Mount             `json:"Mounts,omitempty" yaml:"Mounts,omitempty" toml:"Mounts,omitempty"`
+	Labels            map[string]string   `json:"Labels,omitempty" yaml:"Labels,omitempty" toml:"Labels,omitempty"`
+	AttachStdin       bool                `json:"AttachStdin,omitempty" yaml:"AttachStdin,omitempty" toml:"AttachStdin,omitempty"`
+	AttachStdout      bool                `json:"AttachStdout,omitempty" yaml:"AttachStdout,omitempty" toml:"AttachStdout,omitempty"`
+	AttachStderr      bool                `json:"AttachStderr,omitempty" yaml:"AttachStderr,omitempty" toml:"AttachStderr,omitempty"`
+	ArgsEscaped       bool                `json:"ArgsEscaped,omitempty" yaml:"ArgsEscaped,omitempty" toml:"ArgsEscaped,omitempty"`
+	Tty               bool                `json:"Tty,omitempty" yaml:"Tty,omitempty" toml:"Tty,omitempty"`
+	OpenStdin         bool                `json:"OpenStdin,omitempty" yaml:"OpenStdin,omitempty" toml:"OpenStdin,omitempty"`
+	StdinOnce         bool                `json:"StdinOnce,omitempty" yaml:"StdinOnce,omitempty" toml:"StdinOnce,omitempty"`
+	NetworkDisabled   bool                `json:"NetworkDisabled,omitempty" yaml:"NetworkDisabled,omitempty" toml:"NetworkDisabled,omitempty"`
+
+	// This is no longer used and has been kept here for backward
+	// compatibility, please use HostConfig.VolumesFrom.
+	VolumesFrom string `json:"VolumesFrom,omitempty" yaml:"VolumesFrom,omitempty" toml:"VolumesFrom,omitempty"`
+}
+
+// HostMount represents a mount point in the container in HostConfig.
+//
+// It has been added in the version 1.25 of the Docker API
+type HostMount struct {
+	Target        string         `json:"Target,omitempty" yaml:"Target,omitempty" toml:"Target,omitempty"`
+	Source        string         `json:"Source,omitempty" yaml:"Source,omitempty" toml:"Source,omitempty"`
+	Type          string         `json:"Type,omitempty" yaml:"Type,omitempty" toml:"Type,omitempty"`
+	ReadOnly      bool           `json:"ReadOnly,omitempty" yaml:"ReadOnly,omitempty" toml:"ReadOnly,omitempty"`
+	BindOptions   *BindOptions   `json:"BindOptions,omitempty" yaml:"BindOptions,omitempty" toml:"BindOptions,omitempty"`
+	VolumeOptions *VolumeOptions `json:"VolumeOptions,omitempty" yaml:"VolumeOptions,omitempty" toml:"VolumeOptions,omitempty"`
+	TempfsOptions *TempfsOptions `json:"TmpfsOptions,omitempty" yaml:"TmpfsOptions,omitempty" toml:"TmpfsOptions,omitempty"`
+}
+
+// BindOptions contains optional configuration for the bind type
+type BindOptions struct {
+	Propagation string `json:"Propagation,omitempty" yaml:"Propagation,omitempty" toml:"Propagation,omitempty"`
+}
+
+// VolumeOptions contains optional configuration for the volume type
+type VolumeOptions struct {
+	NoCopy       bool               `json:"NoCopy,omitempty" yaml:"NoCopy,omitempty" toml:"NoCopy,omitempty"`
+	Labels       map[string]string  `json:"Labels,omitempty" yaml:"Labels,omitempty" toml:"Labels,omitempty"`
+	DriverConfig VolumeDriverConfig `json:"DriverConfig" yaml:"DriverConfig,omitempty" toml:"DriverConfig,omitempty"`
+}
+
+// TempfsOptions contains optional configuration for the tempfs type
+type TempfsOptions struct {
+	SizeBytes int64      `json:"SizeBytes,omitempty" yaml:"SizeBytes,omitempty" toml:"SizeBytes,omitempty"`
+	Mode      int        `json:"Mode,omitempty" yaml:"Mode,omitempty" toml:"Mode,omitempty"`
+	Options   [][]string `json:"Options,omitempty" yaml:"Options,omitempty" toml:"Options,omitempty"`
+}
+
+// VolumeDriverConfig holds a map of volume driver specific options
+type VolumeDriverConfig struct {
+	Name    string            `json:"Name,omitempty" yaml:"Name,omitempty" toml:"Name,omitempty"`
+	Options map[string]string `json:"Options,omitempty" yaml:"Options,omitempty" toml:"Options,omitempty"`
+}
+
+// Mount represents a mount point in the container.
+//
+// It has been added in the version 1.20 of the Docker API, available since
+// Docker 1.8.
+type Mount struct {
+	Name        string
+	Source      string
+	Destination string
+	Driver      string
+	Mode        string
+	RW          bool
 }
 
 // LogConfig defines the log driver type and the configuration for it.
 type LogConfig struct {
-	Type   string            `json:"Type,omitempty" yaml:"Type,omitempty"`
-	Config map[string]string `json:"Config,omitempty" yaml:"Config,omitempty"`
+	Type   string            `json:"Type,omitempty" yaml:"Type,omitempty" toml:"Type,omitempty"`
+	Config map[string]string `json:"Config,omitempty" yaml:"Config,omitempty" toml:"Config,omitempty"`
 }
 
-// SwarmNode containers information about which Swarm node the container is on
+// ULimit defines system-wide resource limitations This can help a lot in
+// system administration, e.g. when a user starts too many processes and
+// therefore makes the system unresponsive for other users.
+type ULimit struct {
+	Name string `json:"Name,omitempty" yaml:"Name,omitempty" toml:"Name,omitempty"`
+	Soft int64  `json:"Soft,omitempty" yaml:"Soft,omitempty" toml:"Soft,omitempty"`
+	Hard int64  `json:"Hard,omitempty" yaml:"Hard,omitempty" toml:"Hard,omitempty"`
+}
+
+// SwarmNode containers information about which Swarm node the container is on.
 type SwarmNode struct {
-	ID     string            `json:"ID,omitempty" yaml:"ID,omitempty"`
-	IP     string            `json:"IP,omitempty" yaml:"IP,omitempty"`
-	Addr   string            `json:"Addr,omitempty" yaml:"Addr,omitempty"`
-	Name   string            `json:"Name,omitempty" yaml:"Name,omitempty"`
-	CPUs   int64             `json:"CPUs,omitempty" yaml:"CPUs,omitempty"`
-	Memory int64             `json:"Memory,omitempty" yaml:"Memory,omitempty"`
-	Labels map[string]string `json:"Labels,omitempty" yaml:"Labels,omitempty"`
+	ID     string            `json:"ID,omitempty" yaml:"ID,omitempty" toml:"ID,omitempty"`
+	IP     string            `json:"IP,omitempty" yaml:"IP,omitempty" toml:"IP,omitempty"`
+	Addr   string            `json:"Addr,omitempty" yaml:"Addr,omitempty" toml:"Addr,omitempty"`
+	Name   string            `json:"Name,omitempty" yaml:"Name,omitempty" toml:"Name,omitempty"`
+	CPUs   int64             `json:"CPUs,omitempty" yaml:"CPUs,omitempty" toml:"CPUs,omitempty"`
+	Memory int64             `json:"Memory,omitempty" yaml:"Memory,omitempty" toml:"Memory,omitempty"`
+	Labels map[string]string `json:"Labels,omitempty" yaml:"Labels,omitempty" toml:"Labels,omitempty"`
+}
+
+// GraphDriver contains information about the GraphDriver used by the
+// container.
+type GraphDriver struct {
+	Name string            `json:"Name,omitempty" yaml:"Name,omitempty" toml:"Name,omitempty"`
+	Data map[string]string `json:"Data,omitempty" yaml:"Data,omitempty" toml:"Data,omitempty"`
+}
+
+// HealthConfig holds configuration settings for the HEALTHCHECK feature
+//
+// It has been added in the version 1.24 of the Docker API, available since
+// Docker 1.12.
+type HealthConfig struct {
+	// Test is the test to perform to check that the container is healthy.
+	// An empty slice means to inherit the default.
+	// The options are:
+	// {} : inherit healthcheck
+	// {"NONE"} : disable healthcheck
+	// {"CMD", args...} : exec arguments directly
+	// {"CMD-SHELL", command} : run command with system's default shell
+	Test []string `json:"Test,omitempty" yaml:"Test,omitempty" toml:"Test,omitempty"`
+
+	// Zero means to inherit. Durations are expressed as integer nanoseconds.
+	Interval      time.Duration `json:"Interval,omitempty" yaml:"Interval,omitempty" toml:"Interval,omitempty"`                // Interval is the time to wait between checks.
+	Timeout       time.Duration `json:"Timeout,omitempty" yaml:"Timeout,omitempty" toml:"Timeout,omitempty"`                   // Timeout is the time to wait before considering the check to have hung.
+	StartPeriod   time.Duration `json:"StartPeriod,omitempty" yaml:"StartPeriod,omitempty" toml:"StartPeriod,omitempty"`       // The start period for the container to initialize before the retries starts to count down.
+	StartInterval time.Duration `json:"StartInterval,omitempty" yaml:"StartInterval,omitempty" toml:"StartInterval,omitempty"` // The start interval is the time to wait between checks during the start period.
+
+	// Retries is the number of consecutive failures needed to consider a container as unhealthy.
+	// Zero means inherit.
+	Retries int `json:"Retries,omitempty" yaml:"Retries,omitempty" toml:"Retries,omitempty"`
 }
 
 // Container is the type encompasing everything about a container - its config,
 // hostconfig, etc.
 type Container struct {
-	ID string `json:"Id" yaml:"Id"`
+	ID string `json:"Id" yaml:"Id" toml:"Id"`
 
-	Created time.Time `json:"Created,omitempty" yaml:"Created,omitempty"`
+	Created time.Time `json:"Created" yaml:"Created,omitempty" toml:"Created,omitempty"`
 
-	Path string   `json:"Path,omitempty" yaml:"Path,omitempty"`
-	Args []string `json:"Args,omitempty" yaml:"Args,omitempty"`
+	Path string   `json:"Path,omitempty" yaml:"Path,omitempty" toml:"Path,omitempty"`
+	Args []string `json:"Args,omitempty" yaml:"Args,omitempty" toml:"Args,omitempty"`
 
-	Config *Config `json:"Config,omitempty" yaml:"Config,omitempty"`
-	State  State   `json:"State,omitempty" yaml:"State,omitempty"`
-	Image  string  `json:"Image,omitempty" yaml:"Image,omitempty"`
+	Config *Config `json:"Config,omitempty" yaml:"Config,omitempty" toml:"Config,omitempty"`
+	State  State   `json:"State" yaml:"State,omitempty" toml:"State,omitempty"`
+	Image  string  `json:"Image,omitempty" yaml:"Image,omitempty" toml:"Image,omitempty"`
 
-	Node *SwarmNode `json:"Node,omitempty" yaml:"Node,omitempty"`
+	Node *SwarmNode `json:"Node,omitempty" yaml:"Node,omitempty" toml:"Node,omitempty"`
 
-	NetworkSettings *NetworkSettings `json:"NetworkSettings,omitempty" yaml:"NetworkSettings,omitempty"`
+	NetworkSettings *NetworkSettings `json:"NetworkSettings,omitempty" yaml:"NetworkSettings,omitempty" toml:"NetworkSettings,omitempty"`
 
-	SysInitPath    string `json:"SysInitPath,omitempty" yaml:"SysInitPath,omitempty"`
-	ResolvConfPath string `json:"ResolvConfPath,omitempty" yaml:"ResolvConfPath,omitempty"`
-	HostnamePath   string `json:"HostnamePath,omitempty" yaml:"HostnamePath,omitempty"`
-	HostsPath      string `json:"HostsPath,omitempty" yaml:"HostsPath,omitempty"`
-	Name           string `json:"Name,omitempty" yaml:"Name,omitempty"`
-	Driver         string `json:"Driver,omitempty" yaml:"Driver,omitempty"`
+	SysInitPath    string  `json:"SysInitPath,omitempty" yaml:"SysInitPath,omitempty" toml:"SysInitPath,omitempty"`
+	ResolvConfPath string  `json:"ResolvConfPath,omitempty" yaml:"ResolvConfPath,omitempty" toml:"ResolvConfPath,omitempty"`
+	HostnamePath   string  `json:"HostnamePath,omitempty" yaml:"HostnamePath,omitempty" toml:"HostnamePath,omitempty"`
+	HostsPath      string  `json:"HostsPath,omitempty" yaml:"HostsPath,omitempty" toml:"HostsPath,omitempty"`
+	LogPath        string  `json:"LogPath,omitempty" yaml:"LogPath,omitempty" toml:"LogPath,omitempty"`
+	Name           string  `json:"Name,omitempty" yaml:"Name,omitempty" toml:"Name,omitempty"`
+	Driver         string  `json:"Driver,omitempty" yaml:"Driver,omitempty" toml:"Driver,omitempty"`
+	Mounts         []Mount `json:"Mounts,omitempty" yaml:"Mounts,omitempty" toml:"Mounts,omitempty"`
 
-	Volumes    map[string]string `json:"Volumes,omitempty" yaml:"Volumes,omitempty"`
-	VolumesRW  map[string]bool   `json:"VolumesRW,omitempty" yaml:"VolumesRW,omitempty"`
-	HostConfig *HostConfig       `json:"HostConfig,omitempty" yaml:"HostConfig,omitempty"`
-	ExecIDs    []string          `json:"ExecIDs,omitempty" yaml:"ExecIDs,omitempty"`
+	Volumes     map[string]string `json:"Volumes,omitempty" yaml:"Volumes,omitempty" toml:"Volumes,omitempty"`
+	VolumesRW   map[string]bool   `json:"VolumesRW,omitempty" yaml:"VolumesRW,omitempty" toml:"VolumesRW,omitempty"`
+	HostConfig  *HostConfig       `json:"HostConfig,omitempty" yaml:"HostConfig,omitempty" toml:"HostConfig,omitempty"`
+	ExecIDs     []string          `json:"ExecIDs,omitempty" yaml:"ExecIDs,omitempty" toml:"ExecIDs,omitempty"`
+	GraphDriver *GraphDriver      `json:"GraphDriver,omitempty" yaml:"GraphDriver,omitempty" toml:"GraphDriver,omitempty"`
 
-	AppArmorProfile string `json:"AppArmorProfile,omitempty" yaml:"AppArmorProfile,omitempty"`
-}
+	RestartCount int `json:"RestartCount,omitempty" yaml:"RestartCount,omitempty" toml:"RestartCount,omitempty"`
 
-// RenameContainerOptions specify parameters to the RenameContainer function.
-//
-// See http://goo.gl/L00hoj for more details.
-type RenameContainerOptions struct {
-	// ID of container to rename
-	ID string `qs:"-"`
+	AppArmorProfile string `json:"AppArmorProfile,omitempty" yaml:"AppArmorProfile,omitempty" toml:"AppArmorProfile,omitempty"`
 
-	// New name
-	Name string `json:"name,omitempty" yaml:"name,omitempty"`
-}
-
-// RenameContainer updates and existing containers name
-//
-// See http://goo.gl/L00hoj for more details.
-func (c *Client) RenameContainer(opts RenameContainerOptions) error {
-	_, _, err := c.do("POST", fmt.Sprintf("/containers/"+opts.ID+"/rename?%s", queryString(opts)), doOptions{})
-	return err
-}
-
-// InspectContainer returns information about a container by its ID.
-//
-// See http://goo.gl/CxVuJ5 for more details.
-func (c *Client) InspectContainer(id string) (*Container, error) {
-	path := "/containers/" + id + "/json"
-	body, status, err := c.do("GET", path, doOptions{})
-	if status == http.StatusNotFound {
-		return nil, &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return nil, err
-	}
-	var container Container
-	err = json.Unmarshal(body, &container)
-	if err != nil {
-		return nil, err
-	}
-	return &container, nil
-}
-
-// ContainerChanges returns changes in the filesystem of the given container.
-//
-// See http://goo.gl/QkW9sH for more details.
-func (c *Client) ContainerChanges(id string) ([]Change, error) {
-	path := "/containers/" + id + "/changes"
-	body, status, err := c.do("GET", path, doOptions{})
-	if status == http.StatusNotFound {
-		return nil, &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return nil, err
-	}
-	var changes []Change
-	err = json.Unmarshal(body, &changes)
-	if err != nil {
-		return nil, err
-	}
-	return changes, nil
-}
-
-// CreateContainerOptions specify parameters to the CreateContainer function.
-//
-// See http://goo.gl/2xxQQK for more details.
-type CreateContainerOptions struct {
-	Name       string
-	Config     *Config `qs:"-"`
-	HostConfig *HostConfig
-}
-
-// CreateContainer creates a new container, returning the container instance,
-// or an error in case of failure.
-//
-// See http://goo.gl/mErxNp for more details.
-func (c *Client) CreateContainer(opts CreateContainerOptions) (*Container, error) {
-	path := "/containers/create?" + queryString(opts)
-	body, status, err := c.do(
-		"POST",
-		path,
-		doOptions{
-			data: struct {
-				*Config
-				HostConfig *HostConfig `json:"HostConfig,omitempty" yaml:"HostConfig,omitempty"`
-			}{
-				opts.Config,
-				opts.HostConfig,
-			},
-		},
-	)
-
-	if status == http.StatusNotFound {
-		return nil, ErrNoSuchImage
-	}
-	if err != nil {
-		return nil, err
-	}
-	var container Container
-	err = json.Unmarshal(body, &container)
-	if err != nil {
-		return nil, err
-	}
-
-	container.Name = opts.Name
-
-	return &container, nil
+	MountLabel   string `json:"MountLabel,omitempty" yaml:"MountLabel,omitempty" toml:"MountLabel,omitempty"`
+	ProcessLabel string `json:"ProcessLabel,omitempty" yaml:"ProcessLabel,omitempty" toml:"ProcessLabel,omitempty"`
+	Platform     string `json:"Platform,omitempty" yaml:"Platform,omitempty" toml:"Platform,omitempty"`
+	SizeRw       int64  `json:"SizeRw,omitempty" yaml:"SizeRw,omitempty" toml:"SizeRw,omitempty"`
+	SizeRootFs   int64  `json:"SizeRootFs,omitempty" yaml:"SizeRootFs,omitempty" toml:"SizeRootFs,omitempty"`
 }
 
 // KeyValuePair is a type for generic key/value pairs as used in the Lxc
 // configuration
 type KeyValuePair struct {
-	Key   string `json:"Key,omitempty" yaml:"Key,omitempty"`
-	Value string `json:"Value,omitempty" yaml:"Value,omitempty"`
-}
-
-// RestartPolicy represents the policy for automatically restarting a container.
-//
-// Possible values are:
-//
-//   - always: the docker daemon will always restart the container
-//   - on-failure: the docker daemon will restart the container on failures, at
-//                 most MaximumRetryCount times
-//   - no: the docker daemon will not restart the container automatically
-type RestartPolicy struct {
-	Name              string `json:"Name,omitempty" yaml:"Name,omitempty"`
-	MaximumRetryCount int    `json:"MaximumRetryCount,omitempty" yaml:"MaximumRetryCount,omitempty"`
-}
-
-// AlwaysRestart returns a restart policy that tells the Docker daemon to
-// always restart the container.
-func AlwaysRestart() RestartPolicy {
-	return RestartPolicy{Name: "always"}
-}
-
-// RestartOnFailure returns a restart policy that tells the Docker daemon to
-// restart the container on failures, trying at most maxRetry times.
-func RestartOnFailure(maxRetry int) RestartPolicy {
-	return RestartPolicy{Name: "on-failure", MaximumRetryCount: maxRetry}
-}
-
-// NeverRestart returns a restart policy that tells the Docker daemon to never
-// restart the container on failures.
-func NeverRestart() RestartPolicy {
-	return RestartPolicy{Name: "no"}
+	Key   string `json:"Key,omitempty" yaml:"Key,omitempty" toml:"Key,omitempty"`
+	Value string `json:"Value,omitempty" yaml:"Value,omitempty" toml:"Value,omitempty"`
 }
 
 // Device represents a device mapping between the Docker host and the
 // container.
 type Device struct {
-	PathOnHost        string `json:"PathOnHost,omitempty" yaml:"PathOnHost,omitempty"`
-	PathInContainer   string `json:"PathInContainer,omitempty" yaml:"PathInContainer,omitempty"`
-	CgroupPermissions string `json:"CgroupPermissions,omitempty" yaml:"CgroupPermissions,omitempty"`
+	PathOnHost        string `json:"PathOnHost,omitempty" yaml:"PathOnHost,omitempty" toml:"PathOnHost,omitempty"`
+	PathInContainer   string `json:"PathInContainer,omitempty" yaml:"PathInContainer,omitempty" toml:"PathInContainer,omitempty"`
+	CgroupPermissions string `json:"CgroupPermissions,omitempty" yaml:"CgroupPermissions,omitempty" toml:"CgroupPermissions,omitempty"`
+}
+
+// DeviceRequest represents a request for device that's sent to device drivers.
+type DeviceRequest struct {
+	Driver       string            `json:"Driver,omitempty" yaml:"Driver,omitempty" toml:"Driver,omitempty"`
+	Count        int               `json:"Count,omitempty" yaml:"Count,omitempty" toml:"Count,omitempty"`
+	DeviceIDs    []string          `json:"DeviceIDs,omitempty" yaml:"DeviceIDs,omitempty" toml:"DeviceIDs,omitempty"`
+	Capabilities [][]string        `json:"Capabilities,omitempty" yaml:"Capabilities,omitempty" toml:"Capabilities,omitempty"`
+	Options      map[string]string `json:"Options,omitempty" yaml:"Options,omitempty" toml:"Options,omitempty"`
+}
+
+// BlockWeight represents a relative device weight for an individual device inside
+// of a container
+type BlockWeight struct {
+	Path   string `json:"Path,omitempty"`
+	Weight string `json:"Weight,omitempty"`
+}
+
+// BlockLimit represents a read/write limit in IOPS or Bandwidth for a device
+// inside of a container
+type BlockLimit struct {
+	Path string `json:"Path,omitempty"`
+	Rate int64  `json:"Rate,omitempty"`
 }
 
 // HostConfig contains the container options related to starting a container on
 // a given host
 type HostConfig struct {
-	Binds           []string               `json:"Binds,omitempty" yaml:"Binds,omitempty"`
-	CapAdd          []string               `json:"CapAdd,omitempty" yaml:"CapAdd,omitempty"`
-	CapDrop         []string               `json:"CapDrop,omitempty" yaml:"CapDrop,omitempty"`
-	ContainerIDFile string                 `json:"ContainerIDFile,omitempty" yaml:"ContainerIDFile,omitempty"`
-	LxcConf         []KeyValuePair         `json:"LxcConf,omitempty" yaml:"LxcConf,omitempty"`
-	Privileged      bool                   `json:"Privileged,omitempty" yaml:"Privileged,omitempty"`
-	PortBindings    map[Port][]PortBinding `json:"PortBindings,omitempty" yaml:"PortBindings,omitempty"`
-	Links           []string               `json:"Links,omitempty" yaml:"Links,omitempty"`
-	PublishAllPorts bool                   `json:"PublishAllPorts,omitempty" yaml:"PublishAllPorts,omitempty"`
-	DNS             []string               `json:"Dns,omitempty" yaml:"Dns,omitempty"` // For Docker API v1.10 and above only
-	DNSSearch       []string               `json:"DnsSearch,omitempty" yaml:"DnsSearch,omitempty"`
-	ExtraHosts      []string               `json:"ExtraHosts,omitempty" yaml:"ExtraHosts,omitempty"`
-	VolumesFrom     []string               `json:"VolumesFrom,omitempty" yaml:"VolumesFrom,omitempty"`
-	NetworkMode     string                 `json:"NetworkMode,omitempty" yaml:"NetworkMode,omitempty"`
-	IpcMode         string                 `json:"IpcMode,omitempty" yaml:"IpcMode,omitempty"`
-	PidMode         string                 `json:"PidMode,omitempty" yaml:"PidMode,omitempty"`
-	RestartPolicy   RestartPolicy          `json:"RestartPolicy,omitempty" yaml:"RestartPolicy,omitempty"`
-	Devices         []Device               `json:"Devices,omitempty" yaml:"Devices,omitempty"`
-	LogConfig       LogConfig              `json:"LogConfig,omitempty" yaml:"LogConfig,omitempty"`
-	ReadonlyRootfs  bool                   `json:"ReadonlyRootfs,omitempty" yaml:"ReadonlyRootfs,omitempty"`
-	SecurityOpt     []string               `json:"SecurityOpt,omitempty" yaml:"SecurityOpt,omitempty"`
-	CgroupParent    string                 `json:"CgroupParent,omitempty" yaml:"CgroupParent,omitempty"`
+	Binds             []string               `json:"Binds,omitempty" yaml:"Binds,omitempty" toml:"Binds,omitempty"`
+	CapAdd            []string               `json:"CapAdd,omitempty" yaml:"CapAdd,omitempty" toml:"CapAdd,omitempty"`
+	CapDrop           []string               `json:"CapDrop,omitempty" yaml:"CapDrop,omitempty" toml:"CapDrop,omitempty"`
+	Capabilities      []string               `json:"Capabilities,omitempty" yaml:"Capabilities,omitempty" toml:"Capabilities,omitempty"` // Mutually exclusive w.r.t. CapAdd and CapDrop API v1.40
+	GroupAdd          []string               `json:"GroupAdd,omitempty" yaml:"GroupAdd,omitempty" toml:"GroupAdd,omitempty"`
+	ContainerIDFile   string                 `json:"ContainerIDFile,omitempty" yaml:"ContainerIDFile,omitempty" toml:"ContainerIDFile,omitempty"`
+	LxcConf           []KeyValuePair         `json:"LxcConf,omitempty" yaml:"LxcConf,omitempty" toml:"LxcConf,omitempty"`
+	PortBindings      map[Port][]PortBinding `json:"PortBindings,omitempty" yaml:"PortBindings,omitempty" toml:"PortBindings,omitempty"`
+	Links             []string               `json:"Links,omitempty" yaml:"Links,omitempty" toml:"Links,omitempty"`
+	DNS               []string               `json:"Dns,omitempty" yaml:"Dns,omitempty" toml:"Dns,omitempty"` // For Docker API v1.10 and above only
+	DNSOptions        []string               `json:"DnsOptions,omitempty" yaml:"DnsOptions,omitempty" toml:"DnsOptions,omitempty"`
+	DNSSearch         []string               `json:"DnsSearch,omitempty" yaml:"DnsSearch,omitempty" toml:"DnsSearch,omitempty"`
+	ExtraHosts        []string               `json:"ExtraHosts,omitempty" yaml:"ExtraHosts,omitempty" toml:"ExtraHosts,omitempty"`
+	VolumesFrom       []string               `json:"VolumesFrom,omitempty" yaml:"VolumesFrom,omitempty" toml:"VolumesFrom,omitempty"`
+	UsernsMode        string                 `json:"UsernsMode,omitempty" yaml:"UsernsMode,omitempty" toml:"UsernsMode,omitempty"`
+	NetworkMode       string                 `json:"NetworkMode,omitempty" yaml:"NetworkMode,omitempty" toml:"NetworkMode,omitempty"`
+	IpcMode           string                 `json:"IpcMode,omitempty" yaml:"IpcMode,omitempty" toml:"IpcMode,omitempty"`
+	Isolation         string                 `json:"Isolation,omitempty" yaml:"Isolation,omitempty" toml:"Isolation,omitempty"`       // Windows only
+	ConsoleSize       [2]int                 `json:"ConsoleSize,omitempty" yaml:"ConsoleSize,omitempty" toml:"ConsoleSize,omitempty"` // Windows only height x width
+	PidMode           string                 `json:"PidMode,omitempty" yaml:"PidMode,omitempty" toml:"PidMode,omitempty"`
+	UTSMode           string                 `json:"UTSMode,omitempty" yaml:"UTSMode,omitempty" toml:"UTSMode,omitempty"`
+	RestartPolicy     RestartPolicy          `json:"RestartPolicy" yaml:"RestartPolicy,omitempty" toml:"RestartPolicy,omitempty"`
+	Devices           []Device               `json:"Devices,omitempty" yaml:"Devices,omitempty" toml:"Devices,omitempty"`
+	DeviceCgroupRules []string               `json:"DeviceCgroupRules,omitempty" yaml:"DeviceCgroupRules,omitempty" toml:"DeviceCgroupRules,omitempty"`
+	DeviceRequests    []DeviceRequest        `json:"DeviceRequests,omitempty" yaml:"DeviceRequests,omitempty" toml:"DeviceRequests,omitempty"`
+	LogConfig         LogConfig              `json:"LogConfig" yaml:"LogConfig,omitempty" toml:"LogConfig,omitempty"`
+	SecurityOpt       []string               `json:"SecurityOpt,omitempty" yaml:"SecurityOpt,omitempty" toml:"SecurityOpt,omitempty"`
+	CgroupnsMode      string                 `json:"CgroupnsMode,omitempty" yaml:"CgroupnsMode,omitempty" toml:"CgroupnsMode,omitempty"` // v1.40+
+	Cgroup            string                 `json:"Cgroup,omitempty" yaml:"Cgroup,omitempty" toml:"Cgroup,omitempty"`
+	CgroupParent      string                 `json:"CgroupParent,omitempty" yaml:"CgroupParent,omitempty" toml:"CgroupParent,omitempty"`
+	Memory            int64                  `json:"Memory,omitempty" yaml:"Memory,omitempty" toml:"Memory,omitempty"`
+	MemoryReservation int64                  `json:"MemoryReservation,omitempty" yaml:"MemoryReservation,omitempty" toml:"MemoryReservation,omitempty"`
+	// Deprecated: KernelMemory is deprecated as of API 1.42 and removed in API 1.52.
+	KernelMemory         int64             `json:"KernelMemory,omitempty" yaml:"KernelMemory,omitempty" toml:"KernelMemory,omitempty"`
+	MemorySwap           int64             `json:"MemorySwap,omitempty" yaml:"MemorySwap,omitempty" toml:"MemorySwap,omitempty"`
+	CPUShares            int64             `json:"CpuShares,omitempty" yaml:"CpuShares,omitempty" toml:"CpuShares,omitempty"`
+	CPUSet               string            `json:"Cpuset,omitempty" yaml:"Cpuset,omitempty" toml:"Cpuset,omitempty"`
+	CPUSetCPUs           string            `json:"CpusetCpus,omitempty" yaml:"CpusetCpus,omitempty" toml:"CpusetCpus,omitempty"`
+	CPUSetMEMs           string            `json:"CpusetMems,omitempty" yaml:"CpusetMems,omitempty" toml:"CpusetMems,omitempty"`
+	CPUQuota             int64             `json:"CpuQuota,omitempty" yaml:"CpuQuota,omitempty" toml:"CpuQuota,omitempty"`
+	CPUPeriod            int64             `json:"CpuPeriod,omitempty" yaml:"CpuPeriod,omitempty" toml:"CpuPeriod,omitempty"`
+	CPURealtimePeriod    int64             `json:"CpuRealtimePeriod,omitempty" yaml:"CpuRealtimePeriod,omitempty" toml:"CpuRealtimePeriod,omitempty"`
+	CPURealtimeRuntime   int64             `json:"CpuRealtimeRuntime,omitempty" yaml:"CpuRealtimeRuntime,omitempty" toml:"CpuRealtimeRuntime,omitempty"`
+	NanoCPUs             int64             `json:"NanoCpus,omitempty" yaml:"NanoCpus,omitempty" toml:"NanoCpus,omitempty"`
+	BlkioWeight          int64             `json:"BlkioWeight,omitempty" yaml:"BlkioWeight,omitempty" toml:"BlkioWeight,omitempty"`
+	BlkioWeightDevice    []BlockWeight     `json:"BlkioWeightDevice,omitempty" yaml:"BlkioWeightDevice,omitempty" toml:"BlkioWeightDevice,omitempty"`
+	BlkioDeviceReadBps   []BlockLimit      `json:"BlkioDeviceReadBps,omitempty" yaml:"BlkioDeviceReadBps,omitempty" toml:"BlkioDeviceReadBps,omitempty"`
+	BlkioDeviceReadIOps  []BlockLimit      `json:"BlkioDeviceReadIOps,omitempty" yaml:"BlkioDeviceReadIOps,omitempty" toml:"BlkioDeviceReadIOps,omitempty"`
+	BlkioDeviceWriteBps  []BlockLimit      `json:"BlkioDeviceWriteBps,omitempty" yaml:"BlkioDeviceWriteBps,omitempty" toml:"BlkioDeviceWriteBps,omitempty"`
+	BlkioDeviceWriteIOps []BlockLimit      `json:"BlkioDeviceWriteIOps,omitempty" yaml:"BlkioDeviceWriteIOps,omitempty" toml:"BlkioDeviceWriteIOps,omitempty"`
+	Ulimits              []ULimit          `json:"Ulimits,omitempty" yaml:"Ulimits,omitempty" toml:"Ulimits,omitempty"`
+	VolumeDriver         string            `json:"VolumeDriver,omitempty" yaml:"VolumeDriver,omitempty" toml:"VolumeDriver,omitempty"`
+	OomScoreAdj          int               `json:"OomScoreAdj,omitempty" yaml:"OomScoreAdj,omitempty" toml:"OomScoreAdj,omitempty"`
+	MemorySwappiness     *int64            `json:"MemorySwappiness,omitempty" yaml:"MemorySwappiness,omitempty" toml:"MemorySwappiness,omitempty"`
+	PidsLimit            *int64            `json:"PidsLimit,omitempty" yaml:"PidsLimit,omitempty" toml:"PidsLimit,omitempty"`
+	OOMKillDisable       *bool             `json:"OomKillDisable,omitempty" yaml:"OomKillDisable,omitempty" toml:"OomKillDisable,omitempty"`
+	ShmSize              int64             `json:"ShmSize,omitempty" yaml:"ShmSize,omitempty" toml:"ShmSize,omitempty"`
+	Tmpfs                map[string]string `json:"Tmpfs,omitempty" yaml:"Tmpfs,omitempty" toml:"Tmpfs,omitempty"`
+	StorageOpt           map[string]string `json:"StorageOpt,omitempty" yaml:"StorageOpt,omitempty" toml:"StorageOpt,omitempty"`
+	Sysctls              map[string]string `json:"Sysctls,omitempty" yaml:"Sysctls,omitempty" toml:"Sysctls,omitempty"`
+	CPUCount             int64             `json:"CpuCount,omitempty" yaml:"CpuCount,omitempty"`
+	CPUPercent           int64             `json:"CpuPercent,omitempty" yaml:"CpuPercent,omitempty"`
+	IOMaximumBandwidth   int64             `json:"IOMaximumBandwidth,omitempty" yaml:"IOMaximumBandwidth,omitempty"`
+	IOMaximumIOps        int64             `json:"IOMaximumIOps,omitempty" yaml:"IOMaximumIOps,omitempty"`
+	Mounts               []HostMount       `json:"Mounts,omitempty" yaml:"Mounts,omitempty" toml:"Mounts,omitempty"`
+	MaskedPaths          []string          `json:"MaskedPaths,omitempty" yaml:"MaskedPaths,omitempty" toml:"MaskedPaths,omitempty"`
+	ReadonlyPaths        []string          `json:"ReadonlyPaths,omitempty" yaml:"ReadonlyPaths,omitempty" toml:"ReadonlyPaths,omitempty"`
+	Runtime              string            `json:"Runtime,omitempty" yaml:"Runtime,omitempty" toml:"Runtime,omitempty"`
+	Init                 bool              `json:",omitempty" yaml:",omitempty"`
+	Privileged           bool              `json:"Privileged,omitempty" yaml:"Privileged,omitempty" toml:"Privileged,omitempty"`
+	PublishAllPorts      bool              `json:"PublishAllPorts,omitempty" yaml:"PublishAllPorts,omitempty" toml:"PublishAllPorts,omitempty"`
+	ReadonlyRootfs       bool              `json:"ReadonlyRootfs,omitempty" yaml:"ReadonlyRootfs,omitempty" toml:"ReadonlyRootfs,omitempty"`
+	AutoRemove           bool              `json:"AutoRemove,omitempty" yaml:"AutoRemove,omitempty" toml:"AutoRemove,omitempty"`
+	Annotations          map[string]string `json:"Annotations,omitempty" yaml:"Annotations,omitempty" toml:"Annotations,omitempty"`
 }
 
-// StartContainer starts a container, returning an error in case of failure.
-//
-// See http://goo.gl/iM5GYs for more details.
-func (c *Client) StartContainer(id string, hostConfig *HostConfig) error {
-	path := "/containers/" + id + "/start"
-	_, status, err := c.do("POST", path, doOptions{data: hostConfig, forceJSON: true})
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: id, Err: err}
-	}
-	if status == http.StatusNotModified {
-		return &ContainerAlreadyRunning{ID: id}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// StopContainer stops a container, killing it after the given timeout (in
-// seconds).
-//
-// See http://goo.gl/EbcpXt for more details.
-func (c *Client) StopContainer(id string, timeout uint) error {
-	path := fmt.Sprintf("/containers/%s/stop?t=%d", id, timeout)
-	_, status, err := c.do("POST", path, doOptions{})
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: id}
-	}
-	if status == http.StatusNotModified {
-		return &ContainerNotRunning{ID: id}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// RestartContainer stops a container, killing it after the given timeout (in
-// seconds), during the stop process.
-//
-// See http://goo.gl/VOzR2n for more details.
-func (c *Client) RestartContainer(id string, timeout uint) error {
-	path := fmt.Sprintf("/containers/%s/restart?t=%d", id, timeout)
-	_, status, err := c.do("POST", path, doOptions{})
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// PauseContainer pauses the given container.
-//
-// See http://goo.gl/AM5t42 for more details.
-func (c *Client) PauseContainer(id string) error {
-	path := fmt.Sprintf("/containers/%s/pause", id)
-	_, status, err := c.do("POST", path, doOptions{})
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// UnpauseContainer unpauses the given container.
-//
-// See http://goo.gl/eBrNSL for more details.
-func (c *Client) UnpauseContainer(id string) error {
-	path := fmt.Sprintf("/containers/%s/unpause", id)
-	_, status, err := c.do("POST", path, doOptions{})
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// TopResult represents the list of processes running in a container, as
-// returned by /containers/<id>/top.
-//
-// See http://goo.gl/qu4gse for more details.
-type TopResult struct {
-	Titles    []string
-	Processes [][]string
-}
-
-// TopContainer returns processes running inside a container
-//
-// See http://goo.gl/qu4gse for more details.
-func (c *Client) TopContainer(id string, psArgs string) (TopResult, error) {
-	var args string
-	var result TopResult
-	if psArgs != "" {
-		args = fmt.Sprintf("?ps_args=%s", psArgs)
-	}
-	path := fmt.Sprintf("/containers/%s/top%s", id, args)
-	body, status, err := c.do("GET", path, doOptions{})
-	if status == http.StatusNotFound {
-		return result, &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return result, err
-	}
-	err = json.Unmarshal(body, &result)
-	if err != nil {
-		return result, err
-	}
-	return result, nil
-}
-
-// Stats represents container statistics, returned by /containers/<id>/stats.
-//
-// See http://goo.gl/DFMiYD for more details.
-type Stats struct {
-	Read    time.Time `json:"read,omitempty" yaml:"read,omitempty"`
-	Network struct {
-		RxDropped int64 `json:"rx_dropped,omitempty" yaml:"rx_dropped,omitempty"`
-		RxBytes   int64 `json:"rx_bytes,omitempty" yaml:"rx_bytes,omitempty"`
-		RxErrors  int64 `json:"rx_errors,omitempty" yaml:"rx_errors,omitempty"`
-		TxPackets int64 `json:"tx_packets,omitempty" yaml:"tx_packets,omitempty"`
-		TxDropped int64 `json:"tx_dropped,omitempty" yaml:"tx_dropped,omitempty"`
-		RxPackets int64 `json:"rx_packets,omitempty" yaml:"rx_packets,omitempty"`
-		TxErrors  int64 `json:"tx_errors,omitempty" yaml:"tx_errors,omitempty"`
-		TxBytes   int64 `json:"tx_bytes,omitempty" yaml:"tx_bytes,omitempty"`
-	} `json:"network,omitempty" yaml:"network,omitempty"`
-	MemoryStats struct {
-		Stats struct {
-			TotalPgmafault    int64 `json"total_pgmafault,omitempty" yaml:"total_pgmafault,omitempty"`
-			Cache             int64 `json:"cache,omitempty" yaml:"cache,omitempty"`
-			MappedFile        int64 `json:"mapped_file,omitempty" yaml:"mapped_file,omitempty"`
-			TotalInactiveFile int64 `json:"total_inactive_file,omitempty" yaml:"total_inactive_file,omitempty"`
-			Pgpgout           int64 `json:"pgpgout,omitempty" yaml:"pgpgout,omitempty"`
-			Rss               int64 `json:"rss,omitempty" yaml:"rss,omitempty"`
-			TotalMappedFile   int64 `json:"total_mapped_file,omitempty" yaml:"total_mapped_file,omitempty"`
-			Writeback         int64 `json:"writeback,omitempty" yaml:"writeback,omitempty"`
-			Unevictable       int64 `json:"unevictable,omitempty" yaml:"unevictable,omitempty"`
-			Pgpgin            int64 `json:"pgpgin,omitempty" yaml:"pgpgin,omitempty"`
-			TotalUnevictable  int64 `json:"total_unevictable,omitempty" yaml:"total_unevictable,omitempty"`
-			Pgmajfault        int64 `json:"pgmajfault,omitempty" yaml:"pgmajfault,omitempty"`
-			TotalRss          int64 `json:"total_rss,omitempty" yaml:"total_rss,omitempty"`
-			TotalRssHuge      int64 `json:"total_rss_huge,omitempty" yaml:"total_rss_huge,omitempty"`
-			TotalWriteback    int64 `json:"total_writeback,omitempty" yaml:"total_writeback,omitempty"`
-			TotalInactiveAnon int64 `json:"total_inactive_anon,omitempty" yaml:"total_inactive_anon,omitempty"`
-			RssHuge           int64 `json:"rss_huge,omitempty" yaml:"rss_huge,omitempty"`
-			// TODO(pedge): this kills the whole thing, why? commenting out for now
-			//HierarchicalMemoryLimit int64 `json:"hierarchical_memory_limit,omitempty" yaml:"hierarchical_memory_limit,omitempty"`
-			TotalPgfault    int64 `json:"total_pgfault,omitempty" yaml:"total_pgfault,omitempty"`
-			TotalActiveFile int64 `json:"total_active_file,omitempty" yaml:"total_active_file,omitempty"`
-			ActiveAnon      int64 `json:"active_anon,omitempty" yaml:"active_anon,omitempty"`
-			TotalActiveAnon int64 `json:"total_active_anon,omitempty" yaml:"total_active_anon,omitempty"`
-			TotalPgpgout    int64 `json:"total_pgpgout,omitempty" yaml:"total_pgpgout,omitempty"`
-			TotalCache      int64 `json:"total_cache,omitempty" yaml:"total_cache,omitempty"`
-			InactiveAnon    int64 `json:"inactive_anon,omitempty" yaml:"inactive_anon,omitempty"`
-			ActiveFile      int64 `json:"active_file,omitempty" yaml:"active_file,omitempty"`
-			Pgfault         int64 `json:"pgfault,omitempty" yaml:"pgfault,omitempty"`
-			InactiveFile    int64 `json:"inactive_file,omitempty" yaml:"inactive_file,omitempty"`
-			TotalPgpgin     int64 `json:"total_pgpgin,omitempty" yaml:"total_pgpgin,omitempty"`
-		} `json:"stats,omitempty" yaml:"stats,omitempty"`
-		MaxUsage int64 `json:"max_usage,omitempty" yaml:"max_usage,omitempty"`
-		Usage    int64 `json:"usage,omitempty" yaml:"usage,omitempty"`
-		Failcnt  int64 `json:"failcnt,omitempty" yaml:"failcnt,omitempty"`
-		Limit    int64 `json:"limit,omitempty" yaml:"limit,omitempty"`
-	} `json:"memory_stats,omitempty" yaml:"memory_stats,omitempty"`
-	// TODO(pedge): this is in the docker docs, but no data
-	//BlkioStats string `json:"blkio_stats,omitempty" yaml:"blkio_stats,omitempty"`
-	CPUStats struct {
-		CPUUsage struct {
-			PercpuUsage       []int64 `json:"percpu_usage,omitempty" yaml:"percpu_usage,omitempty"`
-			UsageInUsermode   int64   `json:"usage_in_usermode,omitempty" yaml:"usage_in_usermode,omitempty"`
-			TotalUsage        int64   `json:"total_usage,omitempty" yaml:"total_usage,omitempty"`
-			UsageInKernelmode int64   `json:"usage_in_kernelmode,omitempty" yaml:"usage_in_kernelmode,omitempty"`
-		} `json:"cpu_usage,omitempty" yaml:"cpu_usage,omitempty"`
-		SystemCPUUsage int64 `json:"system_cpu_usage,omitempty" yaml:"system_cpu_usage,omitempty"`
-		// TODO(pedge): this is in the docker docs, but no data
-		//ThrottlingData string `json:"throttling_data,omitempty" yaml:"throttling_data,omitempty"`
-	} `json:"cpu_stats,omitempty" yaml:"cpu_stats,omitempty"`
-}
-
-// StatsOptions specify parameters to the Stats function.
-//
-// See http://goo.gl/DFMiYD for more details.
-type StatsOptions struct {
-	ID    string
-	Stats chan<- *Stats
-}
-
-// Stats sends container statistics for the given container to the given channel.
-//
-// This function is blocking, similar to a streaming call for logs, and should be run
-// on a separate goroutine from the caller. Note that this function will block until
-// the given container is removed, not just exited. When finished, this function
-// will close the given channel.
-//
-// See http://goo.gl/DFMiYD for more details.
-func (c *Client) Stats(opts StatsOptions) (retErr error) {
-	errC := make(chan error, 1)
-	readCloser, writeCloser := io.Pipe()
-
-	defer func() {
-		close(opts.Stats)
-		if err := <-errC; err != nil && retErr == nil {
-			retErr = err
-		}
-		if err := readCloser.Close(); err != nil && retErr == nil {
-			retErr = err
-		}
-	}()
-
-	go func() {
-		err := c.stream("GET", fmt.Sprintf("/containers/%s/stats", opts.ID), streamOptions{
-			rawJSONStream: true,
-			stdout:        writeCloser,
-		})
-		if err != nil {
-			dockerError, ok := err.(*Error)
-			if ok {
-				if dockerError.Status == http.StatusNotFound {
-					err = &NoSuchContainer{ID: opts.ID}
-				}
-			}
-		}
-		if closeErr := writeCloser.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-		errC <- err
-		close(errC)
-	}()
-
-	decoder := json.NewDecoder(readCloser)
-	stats := new(Stats)
-	for err := decoder.Decode(&stats); err != io.EOF; err = decoder.Decode(stats) {
-		if err != nil {
-			return err
-		}
-		opts.Stats <- stats
-		stats = new(Stats)
-	}
-	return nil
-}
-
-// KillContainerOptions represents the set of options that can be used in a
-// call to KillContainer.
-//
-// See http://goo.gl/TFkECx for more details.
-type KillContainerOptions struct {
-	// The ID of the container.
-	ID string `qs:"-"`
-
-	// The signal to send to the container. When omitted, Docker server
-	// will assume SIGKILL.
-	Signal Signal
-}
-
-// KillContainer kills a container, returning an error in case of failure.
-//
-// See http://goo.gl/TFkECx for more details.
-func (c *Client) KillContainer(opts KillContainerOptions) error {
-	path := "/containers/" + opts.ID + "/kill" + "?" + queryString(opts)
-	_, status, err := c.do("POST", path, doOptions{})
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: opts.ID}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// RemoveContainerOptions encapsulates options to remove a container.
-//
-// See http://goo.gl/ZB83ji for more details.
-type RemoveContainerOptions struct {
-	// The ID of the container.
-	ID string `qs:"-"`
-
-	// A flag that indicates whether Docker should remove the volumes
-	// associated to the container.
-	RemoveVolumes bool `qs:"v"`
-
-	// A flag that indicates whether Docker should remove the container
-	// even if it is currently running.
-	Force bool
-}
-
-// RemoveContainer removes a container, returning an error in case of failure.
-//
-// See http://goo.gl/ZB83ji for more details.
-func (c *Client) RemoveContainer(opts RemoveContainerOptions) error {
-	path := "/containers/" + opts.ID + "?" + queryString(opts)
-	_, status, err := c.do("DELETE", path, doOptions{})
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: opts.ID}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// CopyFromContainerOptions is the set of options that can be used when copying
-// files or folders from a container.
-//
-// See http://goo.gl/rINMlw for more details.
-type CopyFromContainerOptions struct {
-	OutputStream io.Writer `json:"-"`
-	Container    string    `json:"-"`
-	Resource     string
-}
-
-// CopyFromContainer copy files or folders from a container, using a given
-// resource.
-//
-// See http://goo.gl/rINMlw for more details.
-func (c *Client) CopyFromContainer(opts CopyFromContainerOptions) error {
-	if opts.Container == "" {
-		return &NoSuchContainer{ID: opts.Container}
-	}
-	url := fmt.Sprintf("/containers/%s/copy", opts.Container)
-	body, status, err := c.do("POST", url, doOptions{data: opts})
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: opts.Container}
-	}
-	if err != nil {
-		return err
-	}
-	io.Copy(opts.OutputStream, bytes.NewBuffer(body))
-	return nil
-}
-
-// WaitContainer blocks until the given container stops, return the exit code
-// of the container status.
-//
-// See http://goo.gl/J88DHU for more details.
-func (c *Client) WaitContainer(id string) (int, error) {
-	body, status, err := c.do("POST", "/containers/"+id+"/wait", doOptions{})
-	if status == http.StatusNotFound {
-		return 0, &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return 0, err
-	}
-	var r struct{ StatusCode int }
-	err = json.Unmarshal(body, &r)
-	if err != nil {
-		return 0, err
-	}
-	return r.StatusCode, nil
-}
-
-// CommitContainerOptions aggregates parameters to the CommitContainer method.
-//
-// See http://goo.gl/Jn8pe8 for more details.
-type CommitContainerOptions struct {
-	Container  string
-	Repository string `qs:"repo"`
-	Tag        string
-	Message    string `qs:"m"`
-	Author     string
-	Run        *Config `qs:"-"`
-}
-
-// CommitContainer creates a new image from a container's changes.
-//
-// See http://goo.gl/Jn8pe8 for more details.
-func (c *Client) CommitContainer(opts CommitContainerOptions) (*Image, error) {
-	path := "/commit?" + queryString(opts)
-	body, status, err := c.do("POST", path, doOptions{data: opts.Run})
-	if status == http.StatusNotFound {
-		return nil, &NoSuchContainer{ID: opts.Container}
-	}
-	if err != nil {
-		return nil, err
-	}
-	var image Image
-	err = json.Unmarshal(body, &image)
-	if err != nil {
-		return nil, err
-	}
-	return &image, nil
-}
-
-// AttachToContainerOptions is the set of options that can be used when
-// attaching to a container.
-//
-// See http://goo.gl/RRAhws for more details.
-type AttachToContainerOptions struct {
-	Container    string    `qs:"-"`
-	InputStream  io.Reader `qs:"-"`
-	OutputStream io.Writer `qs:"-"`
-	ErrorStream  io.Writer `qs:"-"`
-
-	// Get container logs, sending it to OutputStream.
-	Logs bool
-
-	// Stream the response?
-	Stream bool
-
-	// Attach to stdin, and use InputStream.
-	Stdin bool
-
-	// Attach to stdout, and use OutputStream.
-	Stdout bool
-
-	// Attach to stderr, and use ErrorStream.
-	Stderr bool
-
-	// If set, after a successful connect, a sentinel will be sent and then the
-	// client will block on receive before continuing.
-	//
-	// It must be an unbuffered channel. Using a buffered channel can lead
-	// to unexpected behavior.
-	Success chan struct{}
-
-	// Use raw terminal? Usually true when the container contains a TTY.
-	RawTerminal bool `qs:"-"`
-}
-
-// AttachToContainer attaches to a container, using the given options.
-//
-// See http://goo.gl/RRAhws for more details.
-func (c *Client) AttachToContainer(opts AttachToContainerOptions) error {
-	if opts.Container == "" {
-		return &NoSuchContainer{ID: opts.Container}
-	}
-	path := "/containers/" + opts.Container + "/attach?" + queryString(opts)
-	return c.hijack("POST", path, hijackOptions{
-		success:        opts.Success,
-		setRawTerminal: opts.RawTerminal,
-		in:             opts.InputStream,
-		stdout:         opts.OutputStream,
-		stderr:         opts.ErrorStream,
-	})
-}
-
-// LogsOptions represents the set of options used when getting logs from a
-// container.
-//
-// See http://goo.gl/rLhKSU for more details.
-type LogsOptions struct {
-	Container    string    `qs:"-"`
-	OutputStream io.Writer `qs:"-"`
-	ErrorStream  io.Writer `qs:"-"`
-	Follow       bool
-	Stdout       bool
-	Stderr       bool
-	Timestamps   bool
-	Tail         string
-
-	// Use raw terminal? Usually true when the container contains a TTY.
-	RawTerminal bool `qs:"-"`
-}
-
-// Logs gets stdout and stderr logs from the specified container.
-//
-// See http://goo.gl/rLhKSU for more details.
-func (c *Client) Logs(opts LogsOptions) error {
-	if opts.Container == "" {
-		return &NoSuchContainer{ID: opts.Container}
-	}
-	if opts.Tail == "" {
-		opts.Tail = "all"
-	}
-	path := "/containers/" + opts.Container + "/logs?" + queryString(opts)
-	return c.stream("GET", path, streamOptions{
-		setRawTerminal: opts.RawTerminal,
-		stdout:         opts.OutputStream,
-		stderr:         opts.ErrorStream,
-	})
-}
-
-// ResizeContainerTTY resizes the terminal to the given height and width.
-func (c *Client) ResizeContainerTTY(id string, height, width int) error {
-	params := make(url.Values)
-	params.Set("h", strconv.Itoa(height))
-	params.Set("w", strconv.Itoa(width))
-	_, _, err := c.do("POST", "/containers/"+id+"/resize?"+params.Encode(), doOptions{})
-	return err
-}
-
-// ExportContainerOptions is the set of parameters to the ExportContainer
-// method.
-//
-// See http://goo.gl/hnzE62 for more details.
-type ExportContainerOptions struct {
-	ID           string
-	OutputStream io.Writer
-}
-
-// ExportContainer export the contents of container id as tar archive
-// and prints the exported contents to stdout.
-//
-// See http://goo.gl/hnzE62 for more details.
-func (c *Client) ExportContainer(opts ExportContainerOptions) error {
-	if opts.ID == "" {
-		return &NoSuchContainer{ID: opts.ID}
-	}
-	url := fmt.Sprintf("/containers/%s/export", opts.ID)
-	return c.stream("GET", url, streamOptions{
-		setRawTerminal: true,
-		stdout:         opts.OutputStream,
-	})
+// NetworkingConfig represents the container's networking configuration for each of its interfaces
+// Carries the networking configs specified in the `docker run` and `docker network connect` commands
+type NetworkingConfig struct {
+	EndpointsConfig map[string]*EndpointConfig `json:"EndpointsConfig" yaml:"EndpointsConfig" toml:"EndpointsConfig"` // Endpoint configs for each connecting network
 }
 
 // NoSuchContainer is the error returned when a given container does not exist.

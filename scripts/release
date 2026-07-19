@@ -1,6 +1,29 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd $(dirname $0)/..
+repo_root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$repo_root"
 
-exec ./scripts/ci
+if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    echo 'Release builds require a clean worktree' >&2
+    exit 1
+fi
+
+head_commit=$(git rev-parse HEAD)
+mapfile -t release_tags < <(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+if [ "${#release_tags[@]}" -ne 1 ]; then
+    echo 'Release builds require exactly one numeric semantic-version tag at HEAD' >&2
+    exit 1
+fi
+
+release_tag=${release_tags[0]}
+if [ "$(git cat-file -t "refs/tags/${release_tag}")" != tag ]; then
+    echo "Release tag must be annotated: ${release_tag}" >&2
+    exit 1
+fi
+if [ "$(git rev-list -n 1 "$release_tag")" != "$head_commit" ]; then
+    echo "Release tag does not resolve to HEAD: ${release_tag}" >&2
+    exit 1
+fi
+
+VERSION_OVERRIDE=${release_tag#v} exec ./scripts/ci

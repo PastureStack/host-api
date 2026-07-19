@@ -8,18 +8,17 @@ import (
 	"testing"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/gorilla/websocket"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/check.v1"
 
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/proxy"
-	wsp_utils "github.com/rancher/websocket-proxy/testutils"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/proxy"
 
-	"github.com/rancher/host-api/config"
-	"github.com/rancher/host-api/events"
-	"github.com/rancher/host-api/testutils"
+	"github.com/PastureStack/host-api/config"
+	"github.com/PastureStack/host-api/events"
+	"github.com/PastureStack/host-api/testutils"
 )
 
 var privateKey interface{}
@@ -49,7 +48,7 @@ func (s *LogsTestSuite) doLogTest(tty bool, prefix string, c *check.C) {
 	createContainerOptions := docker.CreateContainerOptions{
 		Name: "logstest",
 		Config: &docker.Config{
-			Image:     "hello-world",
+			Image:     "pasturestack/host-api-log-fixture:latest",
 			OpenStdin: true,
 			Tty:       tty,
 		},
@@ -80,8 +79,8 @@ func (s *LogsTestSuite) doLogTest(tty bool, prefix string, c *check.C) {
 		},
 	}
 
-	token := wsp_utils.CreateTokenWithPayload(payload, privateKey)
-	url := "ws://localhost:3333/v1/logs/?token=" + token
+	token := testutils.CreateTokenWithPayload(payload, privateKey)
+	url := "ws://127.0.0.1:3333/v1/logs/?token=" + token
 	ws, _, err := dialer.Dial(url, headers)
 	if err != nil {
 		c.Fatal(err)
@@ -91,7 +90,7 @@ func (s *LogsTestSuite) doLogTest(tty bool, prefix string, c *check.C) {
 	for count := 0; count < 20; count++ {
 		_, msg, err := ws.ReadMessage()
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || websocket.IsCloseError(err, websocket.CloseNormalClosure) {
 				return
 			}
 			c.Fatal(err)
@@ -103,30 +102,34 @@ func (s *LogsTestSuite) doLogTest(tty bool, prefix string, c *check.C) {
 	}
 }
 
-func (s *LogsTestSuite) setupWebsocketProxy() {
+func (s *LogsTestSuite) setupWebsocketProxy(c *check.C) {
 	config.Parse()
 	config.Config.HostUuid = "1"
-	config.Config.ParsedPublicKey = wsp_utils.ParseTestPublicKey()
-	privateKey = wsp_utils.ParseTestPrivateKey()
+	config.Config.ParsedPublicKey = testutils.ParseTestPublicKey()
+	privateKey = testutils.ParseTestPrivateKey()
 
-	conf := testutils.GetTestConfig(":3333")
+	conf := testutils.GetTestConfig("127.0.0.1:3333")
 	p := &proxy.Starter{
 		BackendPaths:  []string{"/v1/connectbackend"},
 		FrontendPaths: []string{"/v1/{logs:logs}/"},
 		Config:        conf,
 	}
 
-	log.Infof("Starting websocket proxy. Listening on [%s], Proxying to cattle API at [%s].",
-		conf.ListenAddr, conf.CattleAddr)
+	log.Infof("Starting websocket proxy. Listening on [%s], proxying to the control-platform API at [%s].",
+		conf.ListenAddr, conf.PlatformAddr)
 
 	go p.StartProxy()
-	time.Sleep(time.Second)
-	signedToken := wsp_utils.CreateBackendToken("1", privateKey)
+	if err := testutils.WaitForTCP(conf.ListenAddr, 5*time.Second); err != nil {
+		c.Fatal(err)
+	}
+	signedToken := testutils.CreateBackendToken("1", privateKey)
 
 	handlers := make(map[string]backend.Handler)
 	handlers["/v1/logs/"] = &LogsHandler{}
-	go backend.ConnectToProxy("ws://localhost:3333/v1/connectbackend?token="+signedToken, handlers)
-	s.pullImage("hello-world", "latest")
+	go backend.ConnectToProxy("ws://127.0.0.1:3333/v1/connectbackend?token="+signedToken, handlers)
+	if _, err := s.client.InspectImage("pasturestack/host-api-log-fixture:latest"); err != nil {
+		c.Fatalf("Local log test image is missing: %v", err)
+	}
 }
 
 func (s *LogsTestSuite) SetUpSuite(c *check.C) {
@@ -135,15 +138,5 @@ func (s *LogsTestSuite) SetUpSuite(c *check.C) {
 		c.Fatalf("Could not connect to docker, err: [%v]", err)
 	}
 	s.client = cli
-	s.setupWebsocketProxy()
-}
-
-func (s *LogsTestSuite) pullImage(imageRepo, imageTag string) error {
-	imageOptions := docker.PullImageOptions{
-		Repository: imageRepo,
-		Tag:        imageTag,
-	}
-	imageAuth := docker.AuthConfiguration{}
-	log.Infof("Pulling %v:%v image.", imageRepo, imageTag)
-	return s.client.PullImage(imageOptions, imageAuth)
+	s.setupWebsocketProxy(c)
 }

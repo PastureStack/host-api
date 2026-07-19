@@ -14,18 +14,19 @@ import (
 func CheckError(err error, level int) {
 	if err != nil {
 		var stack [4096]byte
-		runtime.Stack(stack[:], false)
-		log.Printf("%q\n%s\n", err, stack[:])
+		length := runtime.Stack(stack[:], false)
+		trace := stack[:length]
+		log.Printf("%q\n%s\n", err, trace)
 
 		switch level {
 		case 0:
-			glog.Infoln("%q\n%s\n", err)
+			glog.Infof("%q\n%s\n", err, trace)
 		case 1:
-			glog.Warningln("%q\n%s\n", err)
+			glog.Warningf("%q\n%s\n", err, trace)
 		case 2:
-			glog.Errorln("%q\n%s\n", err)
+			glog.Errorf("%q\n%s\n", err, trace)
 		case 3:
-			glog.Fatalln("%q\n%s\n", err)
+			glog.Fatalf("%q\n%s\n", err, trace)
 		}
 
 		glog.Flush()

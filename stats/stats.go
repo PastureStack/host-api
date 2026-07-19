@@ -2,17 +2,17 @@ package stats
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net/url"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 
-	"github.com/docker/engine-api/client"
-
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/common"
-	"golang.org/x/net/context"
+	"github.com/PastureStack/host-api/auth"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/common"
+	"github.com/moby/moby/client"
 )
 
 type StatsHandler struct {
@@ -23,7 +23,12 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
-		log.WithFields(log.Fields{"error": err, "message": initialMessage}).Error("Couldn't parse url from message.")
+		log.Error("Could not parse statistics request URL.")
+		return
+	}
+	token, valid := auth.GetAndCheckToken(requestUrl.Query().Get("token"))
+	if !valid {
+		log.Error("Invalid statistics token.")
 		return
 	}
 
@@ -32,13 +37,20 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 	if len(parts) == 3 {
 		id = parts[2]
 	}
+	containerIDs, resourceID, authorized := legacyStatsAuthorization(token, id)
+	if !authorized {
+		log.Error("Statistics token does not authorize the requested resource.")
+		return
+	}
 
-	dclient, err := client.NewEnvClient()
+	dclient, err := newDockerClient()
 	if err != nil {
 		log.WithFields(log.Fields{"error": err}).Error("Couldn't get docker client")
 		return
 	}
-	dclient.UpdateClientVersion("1.22")
+	defer dclient.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	reader, writer := io.Pipe()
 
@@ -46,6 +58,7 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 		for {
 			_, ok := <-incomingMessages
 			if !ok {
+				cancel()
 				w.Close()
 				return
 			}
@@ -54,6 +67,7 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 
 	go func(r *io.PipeReader) {
 		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			text := scanner.Text()
 			message := common.Message{
@@ -91,7 +105,7 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 				}
 			}
 
-			err = writeAggregatedStats("", nil, "host", infos, uint64(memLimit), writer)
+			err = writeAggregatedStats(resourceID, nil, "host", infos, uint64(memLimit), writer)
 			if err != nil {
 				return
 			}
@@ -100,19 +114,19 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 			count = 1
 		}
 	} else {
-		inspect, err := dclient.ContainerInspect(context.Background(), id)
+		inspect, err := dclient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 		if err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("Can not inspect containers")
 			return
 		}
-		statsReader, err := dclient.ContainerStats(context.Background(), id, true)
+		statsResult, err := dclient.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: true})
 		if err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("Can not get stats reader from docker")
 			return
 		}
-		defer statsReader.Close()
-		pid := inspect.State.Pid
-		bufioReader := bufio.NewReader(statsReader)
+		defer statsResult.Body.Close()
+		pid := inspect.Container.State.Pid
+		bufioReader := bufio.NewReader(statsResult.Body)
 		for {
 			infos := []containerInfo{}
 			cInfo, err := getContainerStats(bufioReader, count, id, pid)
@@ -128,7 +142,7 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 				}
 			}
 
-			err = writeAggregatedStats(id, nil, "container", infos, uint64(memLimit), writer)
+			err = writeAggregatedStats(id, containerIDs, "container", infos, uint64(memLimit), writer)
 			if err != nil {
 				return
 			}

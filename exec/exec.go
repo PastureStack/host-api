@@ -5,14 +5,14 @@ import (
 	"io"
 	"net/url"
 
-	log "github.com/Sirupsen/logrus"
 	dockerClient "github.com/fsouza/go-dockerclient"
+	log "github.com/sirupsen/logrus"
 
-	"github.com/rancher/websocket-proxy/backend"
-	"github.com/rancher/websocket-proxy/common"
+	"github.com/PastureStack/websocket-proxy/backend"
+	"github.com/PastureStack/websocket-proxy/common"
 
-	"github.com/rancher/host-api/auth"
-	"github.com/rancher/host-api/events"
+	"github.com/PastureStack/host-api/auth"
+	"github.com/PastureStack/host-api/events"
 )
 
 type ExecHandler struct {
@@ -23,7 +23,7 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
-		log.WithFields(log.Fields{"error": err, "url": initialMessage}).Error("Couldn't parse url.")
+		log.Error("Could not parse exec request URL.")
 		return
 	}
 	tokenString := requestUrl.Query().Get("token")
@@ -32,8 +32,16 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 		return
 	}
 
-	execMap := token.Claims["exec"].(map[string]interface{})
+	execMap, ok := auth.GetClaimMap(token, "exec")
+	if !ok {
+		log.Error("Token missing exec claim.")
+		return
+	}
 	execConfig := convert(execMap)
+	if execConfig.Container == "" || len(execConfig.Cmd) == 0 {
+		log.Error("Token contains an invalid exec configuration.")
+		return
+	}
 
 	client, err := events.NewDockerClient()
 	if err != nil {
@@ -43,20 +51,24 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 
 	outputReader, outputWriter := io.Pipe()
 	inputReader, inputWriter := io.Pipe()
+	defer outputReader.Close()
+	defer outputWriter.Close()
+	defer inputReader.Close()
+	defer inputWriter.Close()
 
 	execObj, err := client.CreateExec(execConfig)
 	if err != nil {
 		return
 	}
 
-	go func(w *io.PipeWriter) {
+	go func() {
 		for {
 			msg, ok := <-incomingMessages
 			if !ok {
 				if _, err := inputWriter.Write([]byte("\x04")); err != nil {
-					log.WithFields(log.Fields{"error": err}).Error("Error writing EOT message.")
+					log.WithFields(log.Fields{"error": err}).Debug("Exec input stream was already closed.")
 				}
-				w.Close()
+				inputWriter.Close()
 				return
 			}
 			data, err := base64.StdEncoding.DecodeString(msg)
@@ -64,9 +76,12 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 				log.WithFields(log.Fields{"error": err}).Error("Error decoding message.")
 				continue
 			}
-			inputWriter.Write([]byte(data))
+			if _, err := inputWriter.Write(data); err != nil {
+				log.WithFields(log.Fields{"error": err}).Error("Error writing exec input.")
+				return
+			}
 		}
-	}(outputWriter)
+	}()
 
 	go func(r *io.PipeReader) {
 		buffer := make([]byte, 4096, 4096)
@@ -95,7 +110,9 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 		OutputStream: outputWriter,
 	}
 
-	client.StartExec(execObj.ID, startConfig)
+	if err := client.StartExec(execObj.ID, startConfig); err != nil {
+		log.WithFields(log.Fields{"error": err, "exec": execObj.ID}).Error("Exec session failed.")
+	}
 }
 
 func convert(execMap map[string]interface{}) dockerClient.CreateExecOptions {
