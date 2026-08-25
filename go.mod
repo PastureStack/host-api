@@ -12,7 +12,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/moby/moby/client v0.5.1
 	github.com/shirou/gopsutil/v4 v4.26.7
-	github.com/sirupsen/logrus v1.10.1
+	github.com/sirupsen/logrus v1.10.2
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
