@@ -8,7 +8,7 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Project status
 
-This is a migration proof of concept. The candidate uses a digest-pinned Ubuntu 26.04 build environment, Go 1.26.5, the current Docker client APIs, bounded control-platform responses, strict JWT claim handling, runtime-only test keys, and a reproducible package. Product-owned imports, settings, event-handler identifiers, and operator output use PastureStack naming. A manually dispatched GitHub security gate builds, race-tests, inventories, and scans the candidate; it does not publish or deploy anything.
+This is a migration proof of concept. The candidate uses a digest-pinned Ubuntu 26.04 build environment, Go 1.27.0, the current Docker client APIs, bounded control-platform responses, strict JWT claim handling, runtime-only test keys, and a reproducible package. Product-owned imports, settings, event-handler identifiers, and operator output use PastureStack naming. A manually dispatched GitHub security gate builds, race-tests, inventories, and scans the candidate; it does not publish or deploy anything.
 
 ## Configuration
 

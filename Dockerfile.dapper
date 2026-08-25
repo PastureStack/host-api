@@ -1,4 +1,4 @@
-FROM docker:29.6.2-cli@sha256:be132a9f282288de4afaf63379dff75711fda0147c6b72a9df44e51841402144 AS snapshot-ca-certificates
+FROM docker:29.7.2-cli@sha256:000bb62ff495f986c9f5578eb67cc2cb98b91138eda81d7762d5371eb8a497fe AS snapshot-ca-certificates
 
 FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
 
@@ -6,9 +6,9 @@ COPY --from=snapshot-ca-certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl
 COPY package/ubuntu-apt.lock /licenses/ubuntu-apt.lock
 
 ARG DAPPER_HOST_ARCH=amd64
-ARG GO_VERSION=1.26.5
-ARG GO_SHA256_amd64=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
-ARG GO_SHA256_arm=6dae9edab81c13bccf962dec15f1fd2ec26c14a6821b4d2c92dab4130c289d7a
+ARG GO_VERSION=1.27.0
+ARG GO_SHA256_amd64=675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685
+ARG GO_SHA256_arm=e337ecd9c321377c0d8832690c2cb10463447c0bd0e65e2e3413dfff63a3435b
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOST_ARCH=${DAPPER_HOST_ARCH} \

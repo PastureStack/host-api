@@ -55,8 +55,8 @@ github.com/ebitengine/purego/internal/xreflect
 # github.com/felixge/httpsnoop v1.1.0
 ## explicit; go 1.25
 github.com/felixge/httpsnoop
-# github.com/fsouza/go-dockerclient v1.13.2
-## explicit; go 1.25.5
+# github.com/fsouza/go-dockerclient v1.13.3
+## explicit; go 1.26
 github.com/fsouza/go-dockerclient
 # github.com/go-logr/logr v1.4.4
 ## explicit; go 1.18
@@ -99,8 +99,8 @@ github.com/kr/pretty
 # github.com/kr/text v0.2.0
 ## explicit
 github.com/kr/text
-# github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0
-## explicit; go 1.16
+# github.com/lufia/plan9stats v0.0.0-20260802145828-341c2f0c90b5
+## explicit; go 1.21
 github.com/lufia/plan9stats
 # github.com/moby/docker-image-spec v1.3.1
 ## explicit; go 1.18
@@ -148,7 +148,7 @@ github.com/moby/sys/sequential
 # github.com/moby/sys/user v0.4.1
 ## explicit; go 1.18
 github.com/moby/sys/user
-# github.com/moby/sys/userns v0.1.0
+# github.com/moby/sys/userns v0.2.0
 ## explicit; go 1.21
 github.com/moby/sys/userns
 # github.com/moby/term v0.5.2
@@ -165,7 +165,7 @@ github.com/opencontainers/image-spec/specs-go/v1
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
 github.com/patrickmn/go-cache
-# github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55
+# github.com/power-devops/perfstat v0.0.0-20260805114148-88456608a4f6
 ## explicit; go 1.14
 github.com/power-devops/perfstat
 # github.com/rogpeppe/go-internal v1.16.0
@@ -179,8 +179,8 @@ github.com/shirou/gopsutil/v4/disk
 github.com/shirou/gopsutil/v4/internal/common
 github.com/shirou/gopsutil/v4/mem
 github.com/shirou/gopsutil/v4/net
-# github.com/sirupsen/logrus v1.9.4
-## explicit; go 1.17
+# github.com/sirupsen/logrus v1.10.1
+## explicit; go 1.23
 github.com/sirupsen/logrus
 # github.com/tklauser/go-sysconf v0.4.0
 ## explicit; go 1.25.0
@@ -239,8 +239,6 @@ go.opentelemetry.io/otel/trace/noop
 golang.org/x/sys/unix
 golang.org/x/sys/windows
 golang.org/x/sys/windows/registry
-# golang.org/x/term v0.45.0
-## explicit; go 1.25.0
 # gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
 ## explicit; go 1.11
 gopkg.in/check.v1
