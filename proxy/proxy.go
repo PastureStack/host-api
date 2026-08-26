@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,11 +32,11 @@ func (s *Handler) Handle(key string, initialMessage string, incomingMessages <-c
 
 	message, err := readMessage(incomingMessages)
 	if err != nil {
-		logger.WithField("error", err).Error("Invalid proxy content")
+		logger.WithField("error", safeLogValue(err)).Error("Invalid proxy content")
 		return
 	}
 
-	logger.WithFields(log.Fields{"key": key, "method": message.Method}).Debug("Starting proxied request")
+	logger.WithFields(log.Fields{"key": safeLogValue(key), "method": safeLogValue(message.Method)}).Debug("Starting proxied request")
 
 	if message.Hijack {
 		s.doHijack(message, key, incomingMessages, response)
@@ -64,7 +65,7 @@ func (s *Handler) doHijack(message *common.HTTPMessage, key string, incomingMess
 
 	u := req.URL
 	if err := validateTargetURL(u); err != nil {
-		log.WithField("error", err).Error("Rejected proxy target")
+		log.WithField("error", safeLogValue(err)).Error("Rejected proxy target")
 		return
 	}
 	if content > maxInitialProxyMessageBytes {
@@ -74,7 +75,7 @@ func (s *Handler) doHijack(message *common.HTTPMessage, key string, incomingMess
 
 	conn, err := dialProxyTarget(u)
 	if err != nil {
-		log.WithField("error", err).Errorf("Failed to connect to %s", u.Host)
+		log.WithField("error", safeLogValue(err)).Errorf("Failed to connect to %s", safeLogValue(u.Host))
 		return
 	}
 	defer conn.Close()
@@ -94,7 +95,7 @@ func (s *Handler) doHijack(message *common.HTTPMessage, key string, incomingMess
 	if content > 0 {
 		buf := make([]byte, int(content))
 		if _, err := io.ReadFull(reader, buf); err != nil {
-			log.WithField("error", err).Errorf("Failed to read initial content for %s", u.Host)
+			log.WithField("error", safeLogValue(err)).Errorf("Failed to read initial content for %s", safeLogValue(u.Host))
 			return
 		}
 		req.Body = io.NopCloser(bytes.NewReader(buf))
@@ -179,7 +180,7 @@ func (s *Handler) doHttp(message *common.HTTPMessage, key string, incomingMessag
 		return
 	}
 	if err := validateTargetURL(req.URL); err != nil {
-		log.WithField("error", err).Error("Rejected proxy target")
+		log.WithField("error", safeLogValue(err)).Error("Rejected proxy target")
 		return
 	}
 	req.Host = message.Host
@@ -226,12 +227,12 @@ func (s *Handler) doHttp(message *common.HTTPMessage, key string, incomingMessag
 	// Make sure we write the response codes if the response buffer is 0 bytes but blocking.
 	// This happens with streaming logs a log
 	if err := httpWriter.writeMessage(); err != nil {
-		log.WithField("error", err).Error("Failed to write header")
+		log.WithField("error", safeLogValue(err)).Error("Failed to write header")
 		return
 	}
 
 	if _, err := io.Copy(httpWriter, resp.Body); err != nil {
-		log.WithField("error", err).Error("Failed to write body")
+		log.WithField("error", safeLogValue(err)).Error("Failed to write body")
 		return
 	}
 }
@@ -275,5 +276,11 @@ func proxyLogTarget(target *url.URL) string {
 	redacted.User = nil
 	redacted.RawQuery = ""
 	redacted.Fragment = ""
-	return redacted.String()
+	return safeLogValue(redacted.String())
+}
+
+func safeLogValue(value interface{}) string {
+	text := fmt.Sprint(value)
+	text = strings.ReplaceAll(text, "\r", "")
+	return strings.ReplaceAll(text, "\n", " ")
 }
