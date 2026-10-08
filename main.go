@@ -134,6 +134,8 @@ func proxyConnectionURL(tokenResponse *platformapi.HostAPIProxyToken) (string, e
 	}
 	query := endpoint.Query()
 	query.Set("token", tokenResponse.Token)
+	query.Set("hostApiVersion", version)
+	query.Set("hostApiCapabilities", "key-audit-v1,key-delegation-v1")
 	endpoint.RawQuery = query.Encode()
 	return endpoint.String(), nil
 }
