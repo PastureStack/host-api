@@ -2,6 +2,7 @@ package stats
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net/url"
 	"time"
@@ -17,7 +18,13 @@ type HostStatsHandler struct {
 }
 
 func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMessages <-chan string, response chan<- common.Message) {
-	defer backend.SignalHandlerClosed(key, response)
+	var audit *auth.StreamAudit
+	defer func() {
+		backend.SignalHandlerClosed(key, response)
+		if audit != nil {
+			audit.Report()
+		}
+	}()
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
@@ -26,12 +33,18 @@ func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMes
 	}
 
 	tokenString := requestUrl.Query().Get("token")
+	audit = auth.BeginStreamAudit(tokenString)
 
-	token, valid := auth.GetAndCheckToken(tokenString)
+	token, valid := auth.GetAndCheckStreamToken(tokenString, requestUrl.Path)
 	if !valid {
 		log.Error("Invalid host statistics token.")
 		return
 	}
+	if !audit.Ready() {
+		audit.Unavailable(key, response)
+		return
+	}
+	audit.Authorized()
 	resourceId, authorized := getResourceIDClaim(token)
 	if !authorized {
 		log.Error("Host statistics token is missing a valid resource claim.")
@@ -39,11 +52,16 @@ func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMes
 	}
 
 	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	stop := auth.StartStreamWatch(context.Background(), tokenString, token, func() { audit.Cancel("AuthorizationRevoked"); reader.Close(); writer.Close() })
+	defer stop()
 
 	go func(w *io.PipeWriter) {
 		for {
 			_, ok := <-incomingMessages
 			if !ok {
+				audit.Cancel("ClientDisconnected")
 				w.Close()
 				return
 			}
@@ -70,6 +88,7 @@ func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMes
 	count := 1
 	memLimit, err := getMemCapcity()
 	if err != nil {
+		audit.Fail("StreamFailed")
 		log.WithFields(log.Fields{"error": err}).Error("Error getting memory capacity.")
 		return
 	}
@@ -79,6 +98,7 @@ func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMes
 
 		cInfo, err := getRootContainerInfo(count)
 		if err != nil {
+			audit.Fail("StreamFailed")
 			return
 		}
 

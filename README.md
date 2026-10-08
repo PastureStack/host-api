@@ -4,15 +4,19 @@ Host API exposes node-local log, statistics, exec, console, Docker socket, conta
 
 PastureStack is an independent community effort to preserve, audit, and modernize the Rancher 1.6 ecosystem. It is not affiliated with or endorsed by Rancher Labs or SUSE.
 
-**Upstream:** [`rancher/host-api`](https://github.com/rancher/host-api). This GitHub fork preserves upstream history, authorship, dates, tags, licenses, and bundled dependency notices; PastureStack maintenance is consolidated into one commit after the preserved upstream boundary.
+## Capabilities
 
-## Project status
+The source package version is `0.38.5`. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
 
-This is a migration proof of concept. The candidate uses a digest-pinned Ubuntu 26.04 build environment, Go 1.27.0, the current Docker client APIs, bounded control-platform responses, strict JWT claim handling, runtime-only test keys, and a reproducible package. Product-owned imports, settings, event-handler identifiers, and operator output use PastureStack naming. A manually dispatched GitHub security gate builds, race-tests, inventories, and scans the candidate; it does not publish or deploy anything.
+Terminal evidence is sent with the host agent's credential. A private persistent spool reserves a PENDING record before execution for every verified API Key trace, preserves the first terminal result, and retries only evidence after outages or process restarts. Interrupted PENDING streams become `CANCELLED`, never a fabricated success. Original API Key and agent secrets are not persisted. Full keys retain their permission payload and expiry contract, but do not bypass audit durability; unavailable admission closes with retryable `AuditUnavailable` (503 semantics), not a permission denial. Ordinary non-Key tokens have no new audit-admission requirement.
 
 ## Configuration
 
 Preferred flags are `--platform-url`, `--platform-access-key`, and `--platform-secret-key`. Existing `--cattle-*` flags remain compatibility aliases. Set `PASTURESTACK_HOME` for the state root and `PASTURESTACK_LOCALE=en-US` or `zh-TW` for operator messages. `host-api --version` reports the pure numeric `MAJOR.MINOR.PATCH` build version.
+
+Set `--completion-spool-dir` or `HOST_API_COMPLETION_SPOOL_DIR` to an absolute dedicated directory ending in `completion-spool` on the agent's persistent state mount, for example `/var/lib/rancher/state/host-api/completion-spool`. Without an override, the root is selected from `PASTURESTACK_STATE_DIR`, `CATTLE_STATE_DIR`, `PASTURESTACK_HOME`, `CATTLE_HOME`, then `/var/lib/pasturestack`. The directory is 0700 and ticket files are 0600; symlink paths, unsafe writable ancestors, other-owner Linux files, and public ticket files are refused. Capacity is bounded to 256 records and 4 MiB of reserved file space (32 KiB per record), with at most seven days of retention. A full or unavailable spool rejects new verified API Key streams rather than discarding their outcomes. Receiver audit retention may impose a shorter acceptance window.
+
+Use the official versioned host-api package and its inner SHA256 manifests through the control platform's config-content installer. The matching Engine and WebSocket Proxy must support target-bound tickets; replacing only the proxy is insufficient.
 
 ## Build and test
 

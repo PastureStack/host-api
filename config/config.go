@@ -44,6 +44,7 @@ type config struct {
 	Locale                string
 	PidFile               string
 	LogFile               string
+	CompletionSpoolDir    string
 }
 
 var Config config
@@ -181,6 +182,7 @@ func registerFlags(set *flag.FlagSet, target *config) {
 	set.StringVar(&target.Locale, "locale", target.Locale, "Operator message locale: en-US or zh-TW")
 	set.StringVar(&target.PidFile, "pid-file", target.PidFile, "PID file")
 	set.StringVar(&target.LogFile, "log", target.LogFile, "Log file")
+	set.StringVar(&target.CompletionSpoolDir, "completion-spool-dir", target.CompletionSpoolDir, "Private persistent API Key terminal-evidence spool directory")
 }
 
 func isConfigFlag(name string) bool {
@@ -188,7 +190,7 @@ func isConfigFlag(name string) bool {
 	case "haproxy-monitor", "port", "ip", "cadvisor-url", "docker-host", "num-stats", "auth",
 		"host-uuid", "host-uuid-check", "public-key", "events-pool-size", "platform-url",
 		"platform-access-key", "platform-secret-key", "cattle-url", "cattle-access-key",
-		"cattle-secret-key", "locale", "pid-file", "log":
+		"cattle-secret-key", "locale", "pid-file", "log", "completion-spool-dir":
 		return true
 	default:
 		return false
