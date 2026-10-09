@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PastureStack/host-api/auth"
 	"github.com/PastureStack/host-api/config"
 	"github.com/PastureStack/host-api/console"
 	"github.com/PastureStack/host-api/dockersocketproxy"
@@ -28,7 +30,7 @@ import (
 )
 
 var (
-	version     = "0.38.4"
+	version     = "0.38.5"
 	showVersion = flag.Bool("version", false, "Print the host API version and exit")
 )
 
@@ -41,6 +43,8 @@ func main() {
 		fmt.Println(version)
 		return
 	}
+	stopCompletionReplay := auth.StartCompletionReplay(context.Background())
+	defer stopCompletionReplay()
 
 	defer glog.Flush()
 
@@ -130,6 +134,8 @@ func proxyConnectionURL(tokenResponse *platformapi.HostAPIProxyToken) (string, e
 	}
 	query := endpoint.Query()
 	query.Set("token", tokenResponse.Token)
+	query.Set("hostApiVersion", version)
+	query.Set("hostApiCapabilities", "key-audit-v1,key-delegation-v1")
 	endpoint.RawQuery = query.Encode()
 	return endpoint.String(), nil
 }

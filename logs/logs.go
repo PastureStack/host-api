@@ -3,6 +3,8 @@ package logs
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/url"
 	"strconv"
@@ -16,13 +18,23 @@ import (
 	// "github.com/PastureStack/host-api/app/common/connect"
 	"github.com/PastureStack/host-api/auth"
 	"github.com/PastureStack/host-api/events"
+	jwt "github.com/golang-jwt/jwt/v5"
 )
 
 type LogsHandler struct {
+	dockerClient func() (*dockerClient.Client, error)
+	// Optional local barrier seam; production always uses the live Engine watcher.
+	streamWatch func(context.Context, string, *jwt.Token, func()) context.CancelFunc
 }
 
 func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages <-chan string, response chan<- common.Message) {
-	defer backend.SignalHandlerClosed(key, response)
+	var audit *auth.StreamAudit
+	defer func() {
+		backend.SignalHandlerClosed(key, response)
+		if audit != nil {
+			audit.Report()
+		}
+	}()
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
@@ -30,18 +42,26 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 		return
 	}
 	tokenString := requestUrl.Query().Get("token")
-	token, valid := auth.GetAndCheckToken(tokenString)
+	audit = auth.BeginStreamAudit(tokenString)
+	token, valid := auth.GetAndCheckStreamToken(tokenString, requestUrl.Path)
 	if !valid {
 		return
 	}
+	if !audit.Ready() {
+		audit.Unavailable(key, response)
+		return
+	}
+	audit.Authorized()
 
 	logs, ok := auth.GetClaimMap(token, "logs")
 	if !ok {
+		audit.Fail("HandshakeDenied")
 		log.Error("Token missing logs claim.")
 		return
 	}
 	container, ok := auth.GetMapString(logs, "Container")
 	if !ok || container == "" {
+		audit.Fail("HandshakeDenied")
 		log.Error("Token contains an invalid logs Container claim.")
 		return
 	}
@@ -59,21 +79,38 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 		tail = "100"
 	}
 
-	client, err := events.NewDockerClient()
+	getClient := l.dockerClient
+	if getClient == nil {
+		getClient = events.NewDockerClient
+	}
+	client, err := getClient()
 	if err != nil {
+		audit.Fail("DockerFailure")
 		log.WithFields(log.Fields{"error": err}).Error("Couldn't get docker client.")
 		return
 	}
 
 	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watch := l.streamWatch
+	if watch == nil {
+		watch = auth.StartStreamWatch
+	}
+	stop := watch(ctx, tokenString, token, func() { audit.Cancel("AuthorizationRevoked"); cancel(); reader.Close(); writer.Close() })
+	defer stop()
 
 	containerRef, err := client.InspectContainer(container)
 	if err != nil {
+		audit.Fail("DockerFailure")
 		log.WithFields(log.Fields{"error": err, "container": container}).Error("Couldn't inspect container for logs.")
 		return
 	}
 
 	logopts := dockerClient.LogsOptions{
+		Context:    ctx,
 		Container:  container,
 		Follow:     follow,
 		Stdout:     true,
@@ -94,6 +131,8 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 		for {
 			_, ok := <-incomingMessages
 			if !ok {
+				audit.Cancel("ClientDisconnected")
+				cancel()
 				w.Close()
 				return
 			}
@@ -119,8 +158,11 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 	}(reader)
 
 	// Returns an error, but ignoring it because it will always return an error when a streaming call is made.
-	if err := client.Logs(logopts); err != nil {
+	if err := client.Logs(logopts); err != nil && !errors.Is(err, io.EOF) {
+		audit.Fail("DockerFailure")
 		log.WithFields(log.Fields{"error": err, "container": container}).Debug("Container log stream closed.")
+	} else {
+		audit.Succeed()
 	}
 }
 

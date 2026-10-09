@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"context"
 	"encoding/base64"
 	"io"
 	"net/url"
@@ -16,10 +17,17 @@ import (
 )
 
 type ExecHandler struct {
+	dockerClient func() (*dockerClient.Client, error)
 }
 
 func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages <-chan string, response chan<- common.Message) {
-	defer backend.SignalHandlerClosed(key, response)
+	var audit *auth.StreamAudit
+	defer func() {
+		backend.SignalHandlerClosed(key, response)
+		if audit != nil {
+			audit.Report()
+		}
+	}()
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
@@ -27,24 +35,37 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 		return
 	}
 	tokenString := requestUrl.Query().Get("token")
-	token, valid := auth.GetAndCheckToken(tokenString)
+	audit = auth.BeginStreamAudit(tokenString)
+	token, valid := auth.GetAndCheckStreamToken(tokenString, requestUrl.Path)
 	if !valid {
 		return
 	}
+	if !audit.Ready() {
+		audit.Unavailable(key, response)
+		return
+	}
+	audit.Authorized()
 
 	execMap, ok := auth.GetClaimMap(token, "exec")
 	if !ok {
+		audit.Fail("HandshakeDenied")
 		log.Error("Token missing exec claim.")
 		return
 	}
 	execConfig := convert(execMap)
 	if execConfig.Container == "" || len(execConfig.Cmd) == 0 {
+		audit.Fail("HandshakeDenied")
 		log.Error("Token contains an invalid exec configuration.")
 		return
 	}
 
-	client, err := events.NewDockerClient()
+	getClient := h.dockerClient
+	if getClient == nil {
+		getClient = events.NewDockerClient
+	}
+	client, err := getClient()
 	if err != nil {
+		audit.Fail("DockerFailure")
 		log.WithFields(log.Fields{"error": err}).Error("Couldn't get docker client.")
 		return
 	}
@@ -55,9 +76,22 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 	defer outputWriter.Close()
 	defer inputReader.Close()
 	defer inputWriter.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := auth.StartStreamWatch(ctx, tokenString, token, func() {
+		audit.Cancel("AuthorizationRevoked")
+		cancel()
+		inputReader.Close()
+		inputWriter.Close()
+		outputReader.Close()
+		outputWriter.Close()
+	})
+	defer stop()
+	execConfig.Context = ctx
 
 	execObj, err := client.CreateExec(execConfig)
 	if err != nil {
+		audit.Fail("DockerFailure")
 		return
 	}
 
@@ -65,6 +99,7 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 		for {
 			msg, ok := <-incomingMessages
 			if !ok {
+				audit.Cancel("ClientDisconnected")
 				if _, err := inputWriter.Write([]byte("\x04")); err != nil {
 					log.WithFields(log.Fields{"error": err}).Debug("Exec input stream was already closed.")
 				}
@@ -103,6 +138,7 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 	}(outputReader)
 
 	startConfig := dockerClient.StartExecOptions{
+		Context:      ctx,
 		Detach:       false,
 		Tty:          true,
 		RawTerminal:  true,
@@ -111,7 +147,24 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 	}
 
 	if err := client.StartExec(execObj.ID, startConfig); err != nil {
+		audit.Fail("DockerFailure")
 		log.WithFields(log.Fields{"error": err, "exec": execObj.ID}).Error("Exec session failed.")
+	} else if audit.Enabled() {
+		// A detached transport is not proof that the command completed successfully.
+		inspect, inspectErr := client.InspectExec(execObj.ID)
+		finishExecAudit(audit, inspect, inspectErr)
+	}
+}
+
+func finishExecAudit(audit *auth.StreamAudit, inspect *dockerClient.ExecInspect, err error) {
+	if err != nil || inspect == nil {
+		audit.Fail("DockerFailure")
+	} else if inspect.Running {
+		audit.Cancel("StreamCancelled")
+	} else if inspect.ExitCode != 0 {
+		audit.Fail("StreamFailed")
+	} else {
+		audit.Succeed()
 	}
 }
 

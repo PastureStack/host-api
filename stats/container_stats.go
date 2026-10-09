@@ -18,7 +18,13 @@ type ContainerStatsHandler struct {
 }
 
 func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomingMessages <-chan string, response chan<- common.Message) {
-	defer backend.SignalHandlerClosed(key, response)
+	var audit *auth.StreamAudit
+	defer func() {
+		backend.SignalHandlerClosed(key, response)
+		if audit != nil {
+			audit.Report()
+		}
+	}()
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
@@ -27,8 +33,9 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 	}
 
 	tokenString := requestUrl.Query().Get("token")
+	audit = auth.BeginStreamAudit(tokenString)
 
-	token, valid := auth.GetAndCheckToken(tokenString)
+	token, valid := auth.GetAndCheckStreamToken(tokenString, requestUrl.Path)
 	containerIds, authorized := getContainerIDsClaim(token)
 
 	id := ""
@@ -41,6 +48,11 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 		log.WithField("id", id).Error("Invalid container statistics token.")
 		return
 	}
+	if !audit.Ready() {
+		audit.Unavailable(key, response)
+		return
+	}
+	audit.Authorized()
 	if id != "" {
 		if !containerStatsAuthorized(id, containerIds) {
 			log.WithField("id", id).Error("Container statistics token does not authorize this container.")
@@ -50,6 +62,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 
 	dclient, err := newDockerClient()
 	if err != nil {
+		audit.Fail("DockerFailure")
 		log.WithFields(log.Fields{"error": err}).Error("Couldn't get docker client.")
 		return
 	}
@@ -58,11 +71,16 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 	defer cancel()
 
 	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	stop := auth.StartStreamWatch(ctx, tokenString, token, func() { audit.Cancel("AuthorizationRevoked"); cancel(); reader.Close(); writer.Close() })
+	defer stop()
 
 	go func(w *io.PipeWriter) {
 		for {
 			_, ok := <-incomingMessages
 			if !ok {
+				audit.Cancel("ClientDisconnected")
 				cancel()
 				w.Close()
 				return
@@ -90,6 +108,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 	count := 1
 	memLimit, err := getMemCapcity()
 	if err != nil {
+		audit.Fail("StreamFailed")
 		log.WithFields(log.Fields{"error": err, "id": id}).Error("Error getting memory capacity.")
 		return
 	}
@@ -98,11 +117,13 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 	if id != "" {
 		inspect, err := dclient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 		if err != nil {
+			audit.Fail("DockerFailure")
 			log.WithFields(log.Fields{"error": err}).Error("Can not inspect containers")
 			return
 		}
 		statsResult, err := dclient.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: true})
 		if err != nil {
+			audit.Fail("DockerFailure")
 			log.WithFields(log.Fields{"error": err}).Error("Can not get stats reader from docker")
 			return
 		}
@@ -115,6 +136,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 			cInfo, err := getContainerStats(bufioReader, count, id, pid)
 
 			if err != nil {
+				audit.Fail("DockerFailure")
 				log.WithFields(log.Fields{"error": err, "id": id}).Error("Error getting container info.")
 				return
 			}
@@ -136,6 +158,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 	} else {
 		contList, err := dclient.ContainerList(ctx, client.ContainerListOptions{})
 		if err != nil {
+			audit.Fail("DockerFailure")
 			log.WithFields(log.Fields{"error": err}).Error("Can not list containers")
 			return
 		}
@@ -146,11 +169,13 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 			if _, ok := containerIds[cont.ID]; ok {
 				inspect, err := dclient.ContainerInspect(ctx, cont.ID, client.ContainerInspectOptions{})
 				if err != nil {
+					audit.Fail("DockerFailure")
 					log.WithFields(log.Fields{"error": err}).Error("Can not inspect containers")
 					return
 				}
 				statsResult, err := dclient.ContainerStats(ctx, cont.ID, client.ContainerStatsOptions{Stream: true})
 				if err != nil {
+					audit.Fail("DockerFailure")
 					log.WithFields(log.Fields{"error": err}).Error("Can not get stats reader from docker")
 					return
 				}
@@ -165,6 +190,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 			infos := []containerInfo{}
 			allInfos, err := getAllDockerContainers(bufioReaders, count, IDList, pids)
 			if err != nil {
+				audit.Fail("DockerFailure")
 				log.WithFields(log.Fields{"error": err}).Error("Error getting all container info.")
 				return
 			}
