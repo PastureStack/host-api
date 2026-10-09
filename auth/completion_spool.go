@@ -99,7 +99,7 @@ func openCompletionSpool(dir string) (*completionSpool, error) {
 	if !filepath.IsAbs(dir) || filepath.Base(dir) != "completion-spool" {
 		return nil, errors.New("completion spool must be an absolute dedicated completion-spool directory")
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := createCompletionSpoolDirectory(dir); err != nil {
 		return nil, err
 	}
 	for current := filepath.Clean(dir); ; current = filepath.Dir(current) {

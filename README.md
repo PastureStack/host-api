@@ -20,6 +20,8 @@ Set `--completion-spool-dir` or `HOST_API_COMPLETION_SPOOL_DIR` to an absolute d
 
 Use the official versioned host-api package and its inner SHA256 manifests through the control platform's config-content installer. The matching Engine and WebSocket Proxy must support target-bound tickets; replacing only the proxy is insufficient.
 
+On Linux, directory creation walks verified, non-symlink directory descriptors before creating descendants. An unsafe configured ancestor is rejected without creating directories through it; custom private persistent state paths remain supported.
+
 ## Build and test
 
 From a Docker-capable Linux host:
