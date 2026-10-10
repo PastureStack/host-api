@@ -3,6 +3,7 @@ package stats
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/url"
 	"time"
@@ -19,18 +20,31 @@ type StatsHandler struct {
 }
 
 func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessages <-chan string, response chan<- common.Message) {
-	defer backend.SignalHandlerClosed(key, response)
+	var audit *auth.StreamAudit
+	defer func() {
+		backend.SignalHandlerClosed(key, response)
+		if audit != nil {
+			audit.Report()
+		}
+	}()
 
 	requestUrl, err := url.Parse(initialMessage)
 	if err != nil {
 		log.Error("Could not parse statistics request URL.")
 		return
 	}
-	token, valid := auth.GetAndCheckToken(requestUrl.Query().Get("token"))
+	tokenString := requestUrl.Query().Get("token")
+	audit = auth.BeginStreamAudit(tokenString)
+	token, valid := auth.GetAndCheckStreamToken(tokenString, requestUrl.Path)
 	if !valid {
 		log.Error("Invalid statistics token.")
 		return
 	}
+	if !audit.Ready() {
+		audit.Unavailable(key, response)
+		return
+	}
+	audit.Authorized()
 
 	id := ""
 	parts := pathParts(requestUrl.Path)
@@ -39,12 +53,14 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 	}
 	containerIDs, resourceID, authorized := legacyStatsAuthorization(token, id)
 	if !authorized {
+		audit.Fail("HandshakeDenied")
 		log.Error("Statistics token does not authorize the requested resource.")
 		return
 	}
 
 	dclient, err := newDockerClient()
 	if err != nil {
+		audit.Fail("DockerFailure")
 		log.WithFields(log.Fields{"error": err}).Error("Couldn't get docker client")
 		return
 	}
@@ -53,11 +69,16 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 	defer cancel()
 
 	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	stop := auth.StartStreamWatch(ctx, tokenString, token, func() { audit.Cancel("AuthorizationRevoked"); cancel(); reader.Close(); writer.Close() })
+	defer stop()
 
 	go func(w *io.PipeWriter) {
 		for {
 			_, ok := <-incomingMessages
 			if !ok {
+				audit.Cancel("ClientDisconnected")
 				cancel()
 				w.Close()
 				return
@@ -86,6 +107,7 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 
 	memLimit, err := getMemCapcity()
 	if err != nil {
+		audit.Fail("StreamFailed")
 		log.WithFields(log.Fields{"error": err, "id": id}).Error("Error getting memory capacity.")
 		return
 	}
@@ -95,6 +117,7 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 
 			cInfo, err := getRootContainerInfo(count)
 			if err != nil {
+				audit.Fail("StreamFailed")
 				return
 			}
 
@@ -116,11 +139,13 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 	} else {
 		inspect, err := dclient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 		if err != nil {
+			audit.Fail("DockerFailure")
 			log.WithFields(log.Fields{"error": err}).Error("Can not inspect containers")
 			return
 		}
 		statsResult, err := dclient.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: true})
 		if err != nil {
+			audit.Fail("DockerFailure")
 			log.WithFields(log.Fields{"error": err}).Error("Can not get stats reader from docker")
 			return
 		}
@@ -132,6 +157,11 @@ func (s *StatsHandler) Handle(key string, initialMessage string, incomingMessage
 			cInfo, err := getContainerStats(bufioReader, count, id, pid)
 
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					audit.Succeed()
+				} else {
+					audit.Fail("DockerFailure")
+				}
 				log.WithFields(log.Fields{"error": err, "id": id}).Error("Error getting container info.")
 				return
 			}

@@ -2,7 +2,7 @@ module github.com/PastureStack/host-api
 
 go 1.26.0
 
-toolchain go1.27.0
+toolchain go1.27.2
 
 require (
 	github.com/PastureStack/websocket-proxy v0.23.13-0.20260809214500-903576e1d20a

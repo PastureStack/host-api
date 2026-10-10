@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 ARCH=${ARCH:?"ARCH not set"}
 SUFFIX=""
 [ "${ARCH}" != "amd64" ] && SUFFIX="_${ARCH}"
-RELEASE_VERSION=${VERSION_OVERRIDE:-v0.38.4}
+RELEASE_VERSION=${VERSION_OVERRIDE:-v0.38.5}
 RELEASE_VERSION=${RELEASE_VERSION#v}
 CONTENT=${PASTURESTACK_PACKAGE_ID:-$(git rev-parse --short=32 HEAD)}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}
@@ -30,6 +30,10 @@ if [ ! -x bin/host-api ]; then
     echo "bin/host-api is missing; run scripts/build before scripts/package" >&2
     exit 1
 fi
+test "$(bin/host-api --version)" = "$RELEASE_VERSION" || {
+    echo "host-api binary version does not match package version; rebuild source" >&2
+    exit 1
+}
 
 mkdir -p build/${CONTENT}/bin
 mkdir -p build/${CONTENT}/licenses

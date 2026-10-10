@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,8 +23,10 @@ func TestProxyConnectionURLValidatesAndEscapesToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "wss://proxy.example.test/connect?mode=host&token=a%2Bb%26c" {
-		t.Fatalf("unexpected proxy URL: %q", result)
+	parsed, _ := url.Parse(result)
+	query := parsed.Query()
+	if query.Get("token") != "a+b&c" || query.Get("mode") != "host" || query.Get("hostApiVersion") != "0.38.5" || query.Get("hostApiCapabilities") != "key-audit-v1,key-delegation-v1" {
+		t.Fatal("proxy connection did not preserve authority and declare producer capabilities")
 	}
 	for _, response := range []*platformapi.HostAPIProxyToken{
 		{URL: "https://proxy.example.test/connect", Token: "token"},

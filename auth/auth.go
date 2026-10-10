@@ -20,21 +20,9 @@ func Auth(rw http.ResponseWriter, req *http.Request) bool {
 		return false
 	}
 
-	token, err := ParseToken(tokenString, config.Config.ParsedPublicKey)
-	if err != nil {
-		glog.Warning("Token validation failed")
+	token, valid := GetAndCheckStreamToken(tokenString, req.URL.Path)
+	if !valid {
 		return false
-	}
-
-	if !token.Valid {
-		return false
-	}
-	if config.Config.HostUuidCheck {
-		hostUUID, found := GetClaimString(token, "hostUuid")
-		if !found || hostUUID != config.Config.HostUuid {
-			glog.Infoln("Host UUID mismatch , authentication failed")
-			return false
-		}
 	}
 	SetToken(req, token)
 
@@ -42,6 +30,10 @@ func Auth(rw http.ResponseWriter, req *http.Request) bool {
 }
 
 func GetAndCheckToken(tokenString string) (*jwt.Token, bool) {
+	return GetAndCheckStreamToken(tokenString, "")
+}
+
+func GetAndCheckStreamToken(tokenString, path string) (*jwt.Token, bool) {
 	token, err := ParseToken(tokenString, config.Config.ParsedPublicKey)
 	if err != nil {
 		glog.Warning("Token validation failed")
@@ -49,6 +41,11 @@ func GetAndCheckToken(tokenString string) (*jwt.Token, bool) {
 	}
 
 	if !token.Valid {
+		return token, false
+	}
+	var valid bool
+	token, valid = verifyDelegation(tokenString, path, token)
+	if !valid {
 		return token, false
 	}
 
