@@ -2,6 +2,7 @@
 /bin/
 /host-api
 /dist/
+/evidence/
 /gopath/
 
 *.sw[mnop]

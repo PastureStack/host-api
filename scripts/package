@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 ARCH=${ARCH:?"ARCH not set"}
 SUFFIX=""
 [ "${ARCH}" != "amd64" ] && SUFFIX="_${ARCH}"
-RELEASE_VERSION=${VERSION_OVERRIDE:-v0.38.5}
+RELEASE_VERSION=${VERSION_OVERRIDE:-v0.38.6}
 RELEASE_VERSION=${RELEASE_VERSION#v}
 CONTENT=${PASTURESTACK_PACKAGE_ID:-$(git rev-parse --short=32 HEAD)}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}

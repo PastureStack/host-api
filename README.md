@@ -6,7 +6,7 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Capabilities
 
-The source package version is `0.38.5`. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
+The source package version is `0.38.6`, built with Go 1.27.3. Use a published release only after its source, reproducibility, vulnerability, and packaged-binary checks pass; a source version is not publication evidence. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
 
 The authenticated backend connection declares the exact `key-audit-v1,key-delegation-v1` capabilities. A compatible Proxy requires that declaration for every verified API Key stream, including full keys, so an older embedded backend cannot bypass terminal audit. Ordinary non-Key streams retain their existing backend compatibility.
 
