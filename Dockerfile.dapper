@@ -6,9 +6,9 @@ COPY --from=snapshot-ca-certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl
 COPY package/ubuntu-apt.lock /licenses/ubuntu-apt.lock
 
 ARG DAPPER_HOST_ARCH=amd64
-ARG GO_VERSION=1.27.2
-ARG GO_SHA256_amd64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
-ARG GO_SHA256_arm=e25a174051d8675f87ac720aedcd25bf89ac652c4b82f26aa47919524725ed95
+ARG GO_VERSION=1.27.3
+ARG GO_SHA256_amd64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+ARG GO_SHA256_arm=d6f4e11dd7157030d7ac11c51c8f73201a2db932d593c3106b1da11cc32bfdf8
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOST_ARCH=${DAPPER_HOST_ARCH} \
@@ -24,6 +24,16 @@ ENV HOST_ARCH=${DAPPER_HOST_ARCH} \
     GOTOOLCHAIN=local
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Official fixed packages overlay the frozen bootstrap snapshot at build time.
+# Keep both original bootstrap locks and the final installed inventory.
+ADD --checksum=sha256:2c418a61d7165d0cde01d9cb05ae025cc41fc75ef6d3f095996bd045ba0945dc https://security.ubuntu.com/ubuntu/pool/main/c/curl/curl_8.18.0-1ubuntu2.8_amd64.deb /tmp/curl.deb
+ADD --checksum=sha256:8db913e1fa5a694ca6ba7b828bd18c5204e6853ac07fe7ed9c6e1f94e3444d8e https://security.ubuntu.com/ubuntu/pool/main/c/curl/libcurl3t64-gnutls_8.18.0-1ubuntu2.8_amd64.deb /tmp/libcurl3t64-gnutls.deb
+ADD --checksum=sha256:7c0b37592f83a629cc22f0c98effa176da9edbd6d77b3f38184a9d0ddc5e0266 https://security.ubuntu.com/ubuntu/pool/main/c/curl/libcurl4t64_8.18.0-1ubuntu2.8_amd64.deb /tmp/libcurl4t64.deb
+ADD --checksum=sha256:3ff73e121f6cd4f19e80ab4329dfd914108b3936c9db3708200203a9b245b34d https://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl3t64_3.5.5-1ubuntu3.7_amd64.deb /tmp/libssl3t64.deb
+ADD --checksum=sha256:6965aafe69e0a49ef34d2e26f8e83d09d1c6037b7e9ee37f19b292a3c6851621 https://security.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.5.5-1ubuntu3.7_amd64.deb /tmp/openssl.deb
+ADD --checksum=sha256:51cf418571059831096abd40e0bd5debaa1ae48a6f8d87d9e4e5f7f12aa4db52 https://security.ubuntu.com/ubuntu/pool/main/o/openssl/openssl-provider-legacy_3.5.5-1ubuntu3.7_amd64.deb /tmp/openssl-provider-legacy.deb
+ADD --checksum=sha256:0498bc9510149ef06abd6c09b8932e43c5bc71b68634b4b8f84488b2e0a20e82 https://security.ubuntu.com/ubuntu/pool/main/l/linux/linux-libc-dev_7.0.0-38.38_amd64.deb /tmp/linux-libc-dev.deb
 
 RUN set -eux; \
     . /licenses/ubuntu-apt.lock; \
@@ -50,6 +60,27 @@ RUN set -eux; \
         runc="${UBUNTU_APT_RUNC_VERSION}" \
         tar="${UBUNTU_APT_TAR_VERSION}" \
         xz-utils="${UBUNTU_APT_XZ_UTILS_VERSION}"; \
+    for package in curl libcurl3t64-gnutls libcurl4t64 libssl3t64 openssl openssl-provider-legacy linux-libc-dev; do \
+        case "$package" in \
+            curl|libcurl*) expected=8.18.0-1ubuntu2.8 ;; \
+            linux-libc-dev) expected=7.0.0-38.38 ;; \
+            *) expected=3.5.5-1ubuntu3.7 ;; \
+        esac; \
+        test "$(dpkg-deb -f "/tmp/${package}.deb" Package)" = "$package"; \
+        test "$(dpkg-deb -f "/tmp/${package}.deb" Version)" = "$expected"; \
+        test "$(dpkg-deb -f "/tmp/${package}.deb" Architecture)" = amd64; \
+    done; \
+    dpkg -i /tmp/curl.deb /tmp/libcurl3t64-gnutls.deb /tmp/libcurl4t64.deb \
+        /tmp/libssl3t64.deb /tmp/openssl.deb /tmp/openssl-provider-legacy.deb /tmp/linux-libc-dev.deb; \
+    for package in curl libcurl3t64-gnutls libcurl4t64 libssl3t64 openssl openssl-provider-legacy linux-libc-dev; do \
+        case "$package" in \
+            curl|libcurl*) expected=8.18.0-1ubuntu2.8 ;; \
+            linux-libc-dev) expected=7.0.0-38.38 ;; \
+            *) expected=3.5.5-1ubuntu3.7 ;; \
+        esac; \
+        test "$(dpkg-query -W -f='${Version}' "$package")" = "$expected"; \
+        rm -f "/tmp/${package}.deb"; \
+    done; \
     { \
         printf 'snapshot\t%s\n' "${UBUNTU_APT_SNAPSHOT}"; \
         dpkg-query -W -f='${binary:Package}\t${Version}\n' | LC_ALL=C sort; \

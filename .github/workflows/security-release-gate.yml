@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      CANDIDATE_VERSION: 0.38.5
+      CANDIDATE_VERSION: 0.38.6
       DAPPER_IMAGE: pasturestack-host-api-dapper:security-gate
       TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
       COSIGN_IMAGE: ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8
@@ -35,8 +35,9 @@ jobs:
           set -euo pipefail
           test -z "$(git status --porcelain)"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-list --count d56f3d0..HEAD)" = 1
-          test "$(git rev-list --count --merges d56f3d0..HEAD)" = 0
+          # Exactly one reviewed maintenance commit after the existing published main.
+          test "$(git rev-list --count b124a9cce56cc3e1082d2f72434592bccb15f6ef..HEAD)" = 1
+          test "$(git rev-list --count --merges b124a9cce56cc3e1082d2f72434592bccb15f6ef..HEAD)" = 0
           private_pattern=$(printf '%s|%s|%s' 'chen''21019' '10\.0\.0\.''125' 'C:\\''Users\\')
           if git grep -n -E "$private_pattern" -- .; then
             echo 'Private operator data is present in the public source tree.' >&2
@@ -67,6 +68,10 @@ jobs:
             "$DAPPER_IMAGE" bash -lc \
             'go version -m /go/src/github.com/PastureStack/host-api/bin/host-api' \
             > evidence/host-api-go-version.txt
+          test "$(awk 'NR == 1 {print $2}' evidence/host-api-go-version.txt)" = go1.27.3
+          grep -F 'CGO_ENABLED=0' evidence/host-api-go-version.txt
+          grep -F "vcs.revision=$GITHUB_SHA" evidence/host-api-go-version.txt
+          grep -F 'vcs.modified=false' evidence/host-api-go-version.txt
           awk '$1 == "#" && ($3 ~ /^v/ || $3 ~ /^[0-9]/) { print $2 "\t" $3 }' \
             vendor/modules.txt > evidence/go-modules.tsv
           test -s evidence/go-modules.tsv
@@ -140,6 +145,16 @@ jobs:
             --output /evidence/source-secret-scan.json /workspace
           rm -rf -- "$source_snapshot"
 
+          # Scan the delivered executable, not only the compressed outer package.
+          product_snapshot=$(mktemp -d "${RUNNER_TEMP}/host-api-product.XXXXXX")
+          tar --no-same-owner -xzf "dist/artifacts/host-api-${CANDIDATE_VERSION}.tar.gz" -C "$product_snapshot"
+          product_binary=$(find "$product_snapshot" -type f -path '*/bin/host-api')
+          test -n "$product_binary"
+          test "$(find "$product_snapshot" -type f -path '*/bin/host-api' | wc -l)" = 1
+          cmp evidence/host-api-linux-amd64 "$product_binary"
+          (cd "$product_snapshot"; sha256sum -c */SHA256SUMSSUM; sha256sum -c */SHA256SUMS)
+          test "$("$product_binary" --version)" = "$CANDIDATE_VERSION"
+
           docker run --rm \
             -v "$TRIVY_CACHE:/root/.cache/trivy" \
             "$TRIVY_IMAGE" image --cache-dir /root/.cache/trivy --download-db-only
@@ -152,11 +167,14 @@ jobs:
             --output /evidence/source-vulnerability-scan.json /workspace
           docker run --rm --network none \
             -v "$TRIVY_CACHE:/root/.cache/trivy" \
-            -v "$GITHUB_WORKSPACE/dist/artifacts:/artifacts:ro" \
+            -v "$product_snapshot:/artifacts:ro" \
             -v "$GITHUB_WORKSPACE/evidence:/evidence" \
-            "$TRIVY_IMAGE" fs --cache-dir /root/.cache/trivy --skip-db-update --offline-scan \
+            "$TRIVY_IMAGE" rootfs --cache-dir /root/.cache/trivy --skip-db-update --offline-scan \
             --scanners vuln,secret --severity CRITICAL,HIGH --format json \
             --output /evidence/artifact-scan.json /artifacts
+          jq -e '[.Results[]? | select(.Type == "gobinary" and (.Target | endswith("/bin/host-api")))] | length == 1' \
+            evidence/artifact-scan.json >/dev/null
+          rm -rf -- "$product_snapshot"
           docker run --rm --network none \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$TRIVY_CACHE:/root/.cache/trivy" \

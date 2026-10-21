@@ -6,7 +6,7 @@ Preferred settings use `platform-*` names. Historical `cattle-*` flags, legacy D
 
 Operator lifecycle messages support `en-US` and `zh-TW`. HTTP response bodies, log streams, statistics payloads, Docker output, identifiers, and protocol errors are not translated.
 
-The current candidate is `0.38.5`, built with Go 1.27.2 on a digest-pinned Ubuntu 26.04 image and an exact Ubuntu package snapshot. Server packaging consumes `host-api-0.38.5.tar.gz`; its filename, executable layout, architecture, legacy SHA-1 compatibility files, and SHA-256 integrity files are release contracts. Product versions must remain pure numeric `MAJOR.MINOR.PATCH` values without branding or maintenance suffixes.
+The source package version is `0.38.6`, built with Go 1.27.3 on a digest-pinned Ubuntu 26.04 image, a frozen bootstrap package snapshot, and checksum-pinned official security fixes. The final builder inventory records installed versions separately from the bootstrap lock. A published package must retain its reviewed producer revision, byte-identical packaging evidence, and successful security checks of the unpacked binary. Server packaging consumes `host-api-0.38.6.tar.gz`; its filename, executable layout, architecture, legacy SHA-1 compatibility files, and SHA-256 integrity files are release contracts. Product versions must remain pure numeric `MAJOR.MINOR.PATCH` values without branding or maintenance suffixes.
 
 Before release, validate token acquisition, event forwarding, logs, stats, exec, console, Docker socket proxy, container proxy, disabled-proxy behavior, key parsing, and restart behavior.
 
