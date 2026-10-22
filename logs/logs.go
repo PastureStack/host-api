@@ -97,9 +97,9 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 	defer cancel()
 	watch := l.streamWatch
 	if watch == nil {
-		watch = auth.StartStreamWatch
+		watch = audit.Watch
 	}
-	stop := watch(ctx, tokenString, token, func() { audit.Cancel("AuthorizationRevoked"); cancel(); reader.Close(); writer.Close() })
+	stop := watch(ctx, tokenString, token, func() { cancel(); reader.Close(); writer.Close() })
 	defer stop()
 
 	containerRef, err := client.InspectContainer(container)

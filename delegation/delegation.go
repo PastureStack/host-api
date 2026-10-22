@@ -123,6 +123,17 @@ type Verifier struct {
 	Now      func() time.Time
 }
 
+// Result separates confirmed loss of authorization from an unverifiable check.
+// Both non-Allowed results still fail closed for stream authorization. Callers
+// must supply the grant from the original signature-verified ticket.
+type Result uint8
+
+const (
+	Unknown Result = iota
+	Allowed
+	ConfirmedDenied
+)
+
 func New(platformURL string) *Verifier {
 	v := &Verifier{Now: time.Now, Client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	u, err := url.Parse(platformURL)
@@ -135,60 +146,94 @@ func New(platformURL string) *Verifier {
 }
 
 func (v *Verifier) Check(ctx context.Context, token string, g *Grant) error {
-	if g == nil {
-		return nil
-	}
-	if v == nil || v.Endpoint == "" || v.Client == nil || v.Now == nil || token == "" || len(token) > MaxTokenBytes || v.Now().Unix() >= g.ExpiresAt {
+	if v.CheckResult(ctx, token, g) != Allowed {
 		return ErrDenied
+	}
+	return nil
+}
+
+func (v *Verifier) CheckResult(ctx context.Context, token string, g *Grant) Result {
+	if g == nil {
+		return Allowed
+	}
+	if v == nil || v.Now == nil || token == "" || len(token) > MaxTokenBytes {
+		return Unknown
+	}
+	if v.Now().Unix() >= g.ExpiresAt {
+		return ConfirmedDenied
+	}
+	if v.Endpoint == "" || v.Client == nil {
+		return Unknown
 	}
 	encoded, _ := json.Marshal(map[string]string{"token": token})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.Endpoint, bytes.NewReader(encoded))
 	if err != nil {
-		return ErrDenied
+		return Unknown
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := v.Client.Do(req)
 	if err != nil {
-		return ErrDenied
+		return Unknown
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ErrDenied
-	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4097))
 	if err != nil || len(data) > 4096 {
-		return ErrDenied
+		return Unknown
 	}
 	var result map[string]interface{}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	if decoder.Decode(&result) != nil {
-		return ErrDenied
+		return Unknown
+	}
+	var extra interface{}
+	if decoder.Decode(&extra) != io.EOF {
+		return Unknown
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		// Only stable live-authorization codes from the configured Engine qualify.
+		// A proxy/gateway status, malformed grant or outage is not proof of revoke.
+		switch result["code"] {
+		case "ApiKeyRevoked", "ApiKeyPolicyChanged", "ApiKeyExpired", "OwnerPermissionDenied",
+			"KeyPolicyDenied", "KeyScopeDenied", "ApiKeyDelegationTargetChanged":
+			return ConfirmedDenied
+		}
+		return Unknown
+	}
+	if resp.StatusCode != http.StatusOK {
+		return Unknown
 	}
 	key, keyOK := Integer(result["keyId"])
 	revision, revisionOK := Integer(result["revision"])
 	expiry, expiryOK := Integer(result["expiresAt"])
 	digest := sha256.Sum256([]byte(token))
 	if result["allowed"] != true || !keyOK || key != g.KeyID || !revisionOK || revision != g.Revision || !expiryOK || expiry != g.ExpiresAt ||
-		result["targetType"] != g.TargetType || result["targetId"] != g.TargetID || result["operation"] != g.Operation || result["tokenDigest"] != hex.EncodeToString(digest[:]) || v.Now().Unix() >= g.ExpiresAt {
-		return ErrDenied
+		result["targetType"] != g.TargetType || result["targetId"] != g.TargetID || result["operation"] != g.Operation || result["tokenDigest"] != hex.EncodeToString(digest[:]) {
+		return Unknown
 	}
-	return nil
+	if v.Now().Unix() >= g.ExpiresAt {
+		return ConfirmedDenied
+	}
+	return Allowed
 }
 
 // Run accepts controllable barriers: tests do not sleep to simulate revocation.
 func (v *Verifier) Run(ctx context.Context, token string, g *Grant, ticks, expiry <-chan time.Time, deny func()) {
+	v.runResult(ctx, token, g, ticks, expiry, func(Result) { deny() })
+}
+
+func (v *Verifier) runResult(ctx context.Context, token string, g *Grant, ticks, expiry <-chan time.Time, deny func(Result)) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-expiry:
-			deny()
+			deny(ConfirmedDenied)
 			return
 		case <-ticks:
-			if v.Check(ctx, token, g) != nil {
-				deny()
+			if result := v.CheckResult(ctx, token, g); result != Allowed {
+				deny(result)
 				return
 			}
 		}
@@ -196,6 +241,10 @@ func (v *Verifier) Run(ctx context.Context, token string, g *Grant, ticks, expir
 }
 
 func (v *Verifier) Watch(parent context.Context, token string, g *Grant, deny func()) context.CancelFunc {
+	return v.WatchResult(parent, token, g, func(Result) { deny() })
+}
+
+func (v *Verifier) WatchResult(parent context.Context, token string, g *Grant, deny func(Result)) context.CancelFunc {
 	ctx, cancel := context.WithCancel(parent)
 	if g == nil {
 		return cancel
@@ -206,6 +255,6 @@ func (v *Verifier) Watch(parent context.Context, token string, g *Grant, deny fu
 		lifetime = 0
 	}
 	timer := time.NewTimer(lifetime)
-	go func() { defer ticker.Stop(); defer timer.Stop(); v.Run(ctx, token, g, ticker.C, timer.C, deny) }()
+	go func() { defer ticker.Stop(); defer timer.Stop(); v.runResult(ctx, token, g, ticker.C, timer.C, deny) }()
 	return cancel
 }

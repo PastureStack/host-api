@@ -73,7 +73,7 @@ func (s *ContainerStatsHandler) Handle(key string, initialMessage string, incomi
 	reader, writer := io.Pipe()
 	defer reader.Close()
 	defer writer.Close()
-	stop := auth.StartStreamWatch(ctx, tokenString, token, func() { audit.Cancel("AuthorizationRevoked"); cancel(); reader.Close(); writer.Close() })
+	stop := audit.Watch(ctx, tokenString, token, func() { cancel(); reader.Close(); writer.Close() })
 	defer stop()
 
 	go func(w *io.PipeWriter) {

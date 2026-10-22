@@ -93,7 +93,7 @@ TEST_CONTAINER_NAME="pasturestack-host-api-test-$$"
 TEST_CONTAINER=$(docker run -i -d --name "${TEST_CONTAINER_NAME}" --label io.pasturestack.host-api-test=true busybox:1)
 
 mkdir -p dist
-go test -mod=vendor -race -count=1 -timeout 120s -covermode=atomic \
+PASTURESTACK_QA_LOG_FIXTURE=1 go test -mod=vendor -race -count=1 -timeout 120s -covermode=atomic \
     -coverprofile=dist/coverage.out -v ./...
 go tool cover -func=dist/coverage.out > dist/coverage-summary.txt
 cat dist/coverage-summary.txt

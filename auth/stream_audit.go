@@ -22,6 +22,9 @@ import (
 type StreamAudit struct {
 	mu                                    sync.Mutex
 	enabled, required, cancelled          bool
+	authorized, completed, frozen         bool
+	reportOnce                            sync.Once
+	recheck                               func(context.Context) delegation.Result
 	token, endpoint, accessKey, secretKey string
 	outcome, failureCode                  string
 	client                                *http.Client
@@ -68,6 +71,12 @@ func BeginStreamAudit(raw string) *StreamAudit {
 			return a
 		}
 	}
+	if a.required && a.enabled {
+		if grant, err := delegation.Parse(map[string]interface{}(claims)); err == nil && grant != nil {
+			verifier := delegation.New(config.Config.PlatformURL)
+			a.recheck = func(ctx context.Context) delegation.Result { return verifier.CheckResult(ctx, raw, grant) }
+		}
+	}
 	if envelope, ok := claims["apiKeyAudit"].(map[string]interface{}); ok {
 		a.expiresAt = receiptExpiry(envelope)
 	}
@@ -103,51 +112,94 @@ func (a *StreamAudit) Ready() bool {
 func (a *StreamAudit) Enabled() bool { return a.enabled }
 func (a *StreamAudit) Authorized() {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.frozen || a.completed || a.cancelled {
+		return
+	}
+	a.authorized = true
 	a.outcome = "CANCELLED"
 	a.failureCode = "ClientDisconnected"
-	a.mu.Unlock()
 }
 func (a *StreamAudit) Succeed() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.cancelled {
+	if !a.cancelled && !a.frozen && !a.completed {
 		a.outcome = "SUCCEEDED"
 		a.failureCode = ""
+		a.completed = true
 	}
 }
 func (a *StreamAudit) Fail(code string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.cancelled {
+	if !a.cancelled && !a.frozen && !a.completed {
 		a.outcome = "FAILED"
 		a.failureCode = code
+		a.completed = true
 	}
 }
 func (a *StreamAudit) Cancel(code string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.frozen || a.completed || (a.cancelled && cancellationPriority(code) <= cancellationPriority(a.failureCode)) {
+		return
+	}
 	a.cancelled = true
 	a.outcome = "CANCELLED"
 	a.failureCode = code
+}
+
+func cancellationPriority(code string) int {
+	switch code {
+	case "AuthorizationRevoked":
+		return 3
+	case "StreamCancelled":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func (a *StreamAudit) finalize(ctx context.Context) {
+	a.mu.Lock()
+	check := a.recheck
+	transport := a.required && a.authorized && !a.completed && !a.frozen &&
+		a.outcome == "CANCELLED" && a.failureCode != "AuthorizationRevoked"
+	a.mu.Unlock()
+	if transport {
+		result := delegation.Unknown
+		if check != nil {
+			result = check(ctx) // Never hold the audit mutex during network I/O.
+		}
+		a.authorizationResult(result)
+	}
+	a.mu.Lock()
+	a.frozen = true
+	a.mu.Unlock()
 }
 
 func (a *StreamAudit) Report() {
 	if !a.enabled {
 		return
 	}
-	queue := a.queue
-	if queue == nil {
-		queue, _ = configuredCompletionSpool()
-	}
-	if queue == nil || queue.complete(a.record("TERMINAL")) != nil {
-		glog.Warning("API key stream terminal evidence could not be persisted")
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
-	defer cancel()
-	if !queue.deliverOne(ctx, completionID(a.token)) {
-		glog.Warning("API key stream terminal audit remains pending delivery")
-	}
+	a.reportOnce.Do(func() {
+		// Rechecking and delivery share the existing total report budget. The
+		// stream is already closed; this cannot renew or reopen its authority.
+		ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+		defer cancel()
+		a.finalize(ctx)
+		queue := a.queue
+		if queue == nil {
+			queue, _ = configuredCompletionSpool()
+		}
+		if queue == nil || queue.complete(a.record("TERMINAL")) != nil {
+			glog.Warning("API key stream terminal evidence could not be persisted")
+			return
+		}
+		if !queue.deliverOne(ctx, completionID(a.token)) {
+			glog.Warning("API key stream terminal audit remains pending delivery")
+		}
+	})
 }
 
 func (a *StreamAudit) deliver(ctx context.Context) bool {
