@@ -37,6 +37,27 @@ func verifyDelegation(raw, path string, token *jwt.Token) (*jwt.Token, bool) {
 
 // The original signed token, not normalized claims, is rechecked for every tick.
 func StartStreamWatch(parent context.Context, raw string, verified *jwt.Token, deny func()) context.CancelFunc {
+	return startStreamWatchResult(parent, raw, verified, func(delegation.Result) { deny() })
+}
+
+// Watch closes immediately on either a confirmed denial or an unknown check.
+// Only the former may become AuthorizationRevoked terminal evidence.
+func (a *StreamAudit) Watch(parent context.Context, raw string, verified *jwt.Token, deny func()) context.CancelFunc {
+	return startStreamWatchResult(parent, raw, verified, func(result delegation.Result) {
+		a.authorizationResult(result)
+		deny()
+	})
+}
+
+func (a *StreamAudit) authorizationResult(result delegation.Result) {
+	if result == delegation.ConfirmedDenied {
+		a.Cancel("AuthorizationRevoked")
+	} else if result != delegation.Allowed {
+		a.Cancel("StreamCancelled")
+	}
+}
+
+func startStreamWatchResult(parent context.Context, raw string, verified *jwt.Token, deny func(delegation.Result)) context.CancelFunc {
 	initial, ok := MapClaims(verified)
 	if ok {
 		if _, scoped := initial[delegation.Claim]; !scoped {
@@ -45,18 +66,18 @@ func StartStreamWatch(parent context.Context, raw string, verified *jwt.Token, d
 	}
 	token, err := ParseToken(raw, config.Config.ParsedPublicKey)
 	if err != nil {
-		deny()
+		deny(delegation.Unknown)
 		return func() {}
 	}
 	claims, ok := MapClaims(token)
 	if !ok {
-		deny()
+		deny(delegation.Unknown)
 		return func() {}
 	}
 	grant, err := delegation.Parse(map[string]interface{}(claims))
 	if err != nil {
-		deny()
+		deny(delegation.Unknown)
 		return func() {}
 	}
-	return delegation.New(config.Config.PlatformURL).Watch(parent, raw, grant, deny)
+	return delegation.New(config.Config.PlatformURL).WatchResult(parent, raw, grant, deny)
 }

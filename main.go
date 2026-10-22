@@ -30,7 +30,7 @@ import (
 )
 
 var (
-	version     = "0.38.5"
+	version     = "0.38.7"
 	showVersion = flag.Bool("version", false, "Print the host API version and exit")
 )
 

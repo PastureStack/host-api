@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,6 +59,7 @@ func TestScopedLogsActualDockerTerminalResults(t *testing.T) {
 			raw := testutils.CreateTokenWithPayload(claims, testutils.ParseTestPrivateKey())
 			digest := sha256.Sum256([]byte(raw))
 			terminal := make(chan map[string]string, 1)
+			var revoked atomic.Bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/v2-beta/apiKeyDelegationCompletion" {
 					user, password, ok := r.BasicAuth()
@@ -74,13 +76,18 @@ func TestScopedLogsActualDockerTerminalResults(t *testing.T) {
 					w.WriteHeader(403)
 					return
 				}
+				if revoked.Load() {
+					w.WriteHeader(http.StatusForbidden)
+					json.NewEncoder(w).Encode(map[string]string{"code": "ApiKeyPolicyChanged"})
+					return
+				}
 				json.NewEncoder(w).Encode(map[string]interface{}{"allowed": true, "keyId": 12, "revision": 3, "targetType": "container", "targetId": "1i9", "operation": "logs", "expiresAt": expires, "tokenDigest": hex.EncodeToString(digest[:])})
 			}))
 			defer server.Close()
 			config.Config.PlatformURL = server.URL
 			incoming := make(chan string)
 			defer func() {
-				if mode != "disconnect" {
+				if mode != "disconnect" && mode != "revoked" {
 					close(incoming)
 				}
 			}()
@@ -93,9 +100,8 @@ func TestScopedLogsActualDockerTerminalResults(t *testing.T) {
 			done := make(chan struct{})
 			go func() { handler.Handle("fixture", "/v2-beta/logs/?token="+raw, incoming, response); close(done) }()
 			if mode == "disconnect" || mode == "revoked" {
-				var deny func()
 				select {
-				case deny = <-watcher:
+				case <-watcher:
 				case <-time.After(10 * time.Second):
 					t.Fatal("handshake did not reach live watcher")
 				}
@@ -108,10 +114,12 @@ func TestScopedLogsActualDockerTerminalResults(t *testing.T) {
 					t.Fatal("Docker output barrier not reached")
 				}
 				if mode == "revoked" {
-					deny()
-				} else {
-					close(incoming)
+					revoked.Store(true)
 				}
+				// Proxy-first: the real incoming goroutine records the transport
+				// cancellation before its pipe/context closes. Finalization then
+				// rechecks the same signed grant against the denied Engine reply.
+				close(incoming)
 			}
 			select {
 			case <-done:

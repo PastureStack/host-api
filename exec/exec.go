@@ -78,8 +78,7 @@ func (h *ExecHandler) Handle(key string, initialMessage string, incomingMessages
 	defer inputWriter.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := auth.StartStreamWatch(ctx, tokenString, token, func() {
-		audit.Cancel("AuthorizationRevoked")
+	stop := audit.Watch(ctx, tokenString, token, func() {
 		cancel()
 		inputReader.Close()
 		inputWriter.Close()
