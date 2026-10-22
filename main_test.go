@@ -25,7 +25,7 @@ func TestProxyConnectionURLValidatesAndEscapesToken(t *testing.T) {
 	}
 	parsed, _ := url.Parse(result)
 	query := parsed.Query()
-	if query.Get("token") != "a+b&c" || query.Get("mode") != "host" || query.Get("hostApiVersion") != "0.38.5" || query.Get("hostApiCapabilities") != "key-audit-v1,key-delegation-v1" {
+	if query.Get("token") != "a+b&c" || query.Get("mode") != "host" || query.Get("hostApiVersion") != version || query.Get("hostApiCapabilities") != "key-audit-v1,key-delegation-v1" {
 		t.Fatal("proxy connection did not preserve authority and declare producer capabilities")
 	}
 	for _, response := range []*platformapi.HostAPIProxyToken{

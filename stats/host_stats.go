@@ -54,7 +54,7 @@ func (s *HostStatsHandler) Handle(key string, initialMessage string, incomingMes
 	reader, writer := io.Pipe()
 	defer reader.Close()
 	defer writer.Close()
-	stop := auth.StartStreamWatch(context.Background(), tokenString, token, func() { audit.Cancel("AuthorizationRevoked"); reader.Close(); writer.Close() })
+	stop := audit.Watch(context.Background(), tokenString, token, func() { reader.Close(); writer.Close() })
 	defer stop()
 
 	go func(w *io.PipeWriter) {
