@@ -6,7 +6,7 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Capabilities
 
-The source package version is `0.38.7`, built with Go 1.27.3. Use a published release only after its source, reproducibility, vulnerability, and packaged-binary checks pass; a source version is not publication evidence. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
+The source package version is `0.38.8`, built with Go 1.27.3. Use a published release only after its source, reproducibility, vulnerability, and packaged-binary checks pass; a source version is not publication evidence. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
 
 The authenticated backend connection declares the exact `key-audit-v1,key-delegation-v1` capabilities. A compatible Proxy requires that declaration for every verified API Key stream, including full keys, so an older embedded backend cannot bypass terminal audit. Ordinary non-Key streams retain their existing backend compatibility.
 
@@ -41,3 +41,7 @@ See [COMPATIBILITY.md](COMPATIBILITY.md), [SECURITY.md](SECURITY.md), and [ORIGI
 ## License and attribution
 
 The inherited project remains licensed under [Apache License 2.0](LICENSE). Copyright and attribution for inherited work and vendored dependencies remain with their respective authors and contributors. PastureStack contributors claim authorship only for their own changes.
+
+## October 2026 security maintenance
+
+Maintained Go builds select the patched Go 1.27.3 compiler without raising the existing Go language requirement. Ubuntu build/runtime stages apply the checksum-pinned `ca-certificates 20260816ubuntu0.26.04.1` security package after their frozen APT baseline; the final trust store and installed version are verified. Release artifacts must pass the repository's existing checks before publication.

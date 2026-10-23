@@ -35,6 +35,7 @@ ADD --checksum=sha256:6965aafe69e0a49ef34d2e26f8e83d09d1c6037b7e9ee37f19b292a3c6
 ADD --checksum=sha256:51cf418571059831096abd40e0bd5debaa1ae48a6f8d87d9e4e5f7f12aa4db52 https://security.ubuntu.com/ubuntu/pool/main/o/openssl/openssl-provider-legacy_3.5.5-1ubuntu3.7_amd64.deb /tmp/openssl-provider-legacy.deb
 ADD --checksum=sha256:0498bc9510149ef06abd6c09b8932e43c5bc71b68634b4b8f84488b2e0a20e82 https://security.ubuntu.com/ubuntu/pool/main/l/linux/linux-libc-dev_7.0.0-38.38_amd64.deb /tmp/linux-libc-dev.deb
 
+ADD --checksum=sha256:5b6326f1932cfd7be57130561dc78192f09ed9f58bfbe6606ed0c50510c3b6cd https://archive.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.26.04.1_all.deb /opt/pasturestack-ca-certificates.deb
 RUN set -eux; \
     . /licenses/ubuntu-apt.lock; \
     find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i \
@@ -45,7 +46,7 @@ RUN set -eux; \
     apt-get --snapshot "${UBUNTU_APT_SNAPSHOT}" install -y --no-install-recommends \
         bash="${UBUNTU_APT_BASH_VERSION}" \
         busybox-static="${UBUNTU_APT_BUSYBOX_STATIC_VERSION}" \
-        ca-certificates="${UBUNTU_APT_CA_CERTIFICATES_VERSION}" \
+        ca-certificates="${UBUNTU_APT_CA_CERTIFICATES_BOOTSTRAP_VERSION}" \
         containerd="${UBUNTU_APT_CONTAINERD_VERSION}" \
         curl="${UBUNTU_APT_CURL_VERSION}" \
         docker.io="${UBUNTU_APT_DOCKER_IO_VERSION}" \
@@ -81,6 +82,11 @@ RUN set -eux; \
         test "$(dpkg-query -W -f='${Version}' "$package")" = "$expected"; \
         rm -f "/tmp/${package}.deb"; \
     done; \
+    dpkg -i /opt/pasturestack-ca-certificates.deb && \
+    update-ca-certificates --fresh && \
+    test "$(dpkg-query -W -f='${Version}' ca-certificates)" = '20260816ubuntu0.26.04.1' && \
+    test ! -e /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_G3.crt && \
+    rm -f /opt/pasturestack-ca-certificates.deb && \
     { \
         printf 'snapshot\t%s\n' "${UBUNTU_APT_SNAPSHOT}"; \
         dpkg-query -W -f='${binary:Package}\t${Version}\n' | LC_ALL=C sort; \
