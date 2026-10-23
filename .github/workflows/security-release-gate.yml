@@ -35,8 +35,9 @@ jobs:
           set -euo pipefail
           test -z "$(git status --porcelain)"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          # Exactly one reviewed maintenance commit after the existing published main.
-          test "$(git rev-list --count 67d1e58d1999730f106ba76c3ee3cf03bbf495d6..HEAD)" = 1
+          # Preserve the published history while allowing a reviewed maintenance series.
+          git merge-base --is-ancestor 67d1e58d1999730f106ba76c3ee3cf03bbf495d6 HEAD
+          test "$(git rev-list --count 67d1e58d1999730f106ba76c3ee3cf03bbf495d6..HEAD)" -ge 1
           test "$(git rev-list --count --merges 67d1e58d1999730f106ba76c3ee3cf03bbf495d6..HEAD)" = 0
           private_pattern=$(printf '%s|%s|%s' 'chen''21019' '10\.0\.0\.''125' 'C:\\''Users\\')
           if git grep -n -E "$private_pattern" -- .; then
