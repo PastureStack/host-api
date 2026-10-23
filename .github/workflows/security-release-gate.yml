@@ -171,7 +171,7 @@ jobs:
             -v "$product_snapshot:/artifacts:ro" \
             -v "$GITHUB_WORKSPACE/evidence:/evidence" \
             "$TRIVY_IMAGE" rootfs --cache-dir /root/.cache/trivy --skip-db-update --offline-scan \
-            --scanners vuln,secret --severity CRITICAL,HIGH --format json \
+            --scanners vuln,secret --list-all-pkgs --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --format json \
             --output /evidence/artifact-scan.json /artifacts
           jq -e '[.Results[]? | select(.Type == "gobinary" and (.Target | endswith("/bin/host-api")))] | length == 1' \
             evidence/artifact-scan.json >/dev/null
