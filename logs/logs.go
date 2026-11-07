@@ -129,41 +129,57 @@ func (l *LogsHandler) Handle(key string, initialMessage string, incomingMessages
 
 	go func(w *io.PipeWriter) {
 		for {
-			_, ok := <-incomingMessages
-			if !ok {
-				audit.Cancel("ClientDisconnected")
-				cancel()
-				w.Close()
+			select {
+			case <-ctx.Done():
 				return
+			case _, ok := <-incomingMessages:
+				if !ok {
+					audit.Cancel("ClientDisconnected")
+					cancel()
+					w.Close()
+					return
+				}
 			}
 		}
 	}(writer)
 
-	go func(r *io.PipeReader) {
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-		scanner.Split(customSplit)
-		for scanner.Scan() {
-			text := scanner.Text()
-			message := common.Message{
-				Key:  key,
-				Type: common.Body,
-				Body: text,
-			}
-			response <- message
-		}
-		if err := scanner.Err(); err != nil {
-			log.WithFields(log.Fields{"error": err}).Error("Error with the container log scanner.")
-		}
-	}(reader)
-
-	// Returns an error, but ignoring it because it will always return an error when a streaming call is made.
-	if err := client.Logs(logopts); err != nil && !errors.Is(err, io.EOF) {
+	// Docker EOF is not frontend EOF until every queued log body is sent.
+	err = streamContainerLogs(ctx, key, reader, writer, response, func() error { return client.Logs(logopts) })
+	if err != nil && !errors.Is(err, io.EOF) {
 		audit.Fail("DockerFailure")
 		log.WithFields(log.Fields{"error": err, "container": container}).Debug("Container log stream closed.")
 	} else {
 		audit.Succeed()
 	}
+}
+
+// A reader may have consumed the final Pipe write while its scanner/body send
+// is still pending. Close writer to signal EOF, then drain before native Close.
+// Cancellation must also unblock a scanner waiting for the response consumer.
+func streamContainerLogs(ctx context.Context, key string, reader io.ReadCloser, writer io.WriteCloser, response chan<- common.Message, stream func() error) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer reader.Close()
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+		scanner.Split(customSplit)
+		for scanner.Scan() {
+			message := common.Message{Key: key, Type: common.Body, Body: scanner.Text()}
+			select {
+			case response <- message:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			log.WithFields(log.Fields{"error": err}).Error("Error with the container log scanner.")
+		}
+	}()
+	err := stream()
+	_ = writer.Close()
+	<-done
+	return err
 }
 
 func customSplit(data []byte, atEOF bool) (advance int, token []byte, err error) {
