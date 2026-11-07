@@ -6,7 +6,12 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Capabilities
 
-The source package version is `0.38.9`, built with Go 1.27.3. Use a published release only after its source, reproducibility, vulnerability, and packaged-binary checks pass; a source version is not publication evidence. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
+[Host API `0.38.9`](https://github.com/PastureStack/host-api/releases/tag/v0.38.9) is published, built with Go 1.27.3. Original CI passed source, reproducibility, vulnerability and packaged-binary checks. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
+
+Bounded Docker log streams drain the final frame before closing at EOF, while
+cancellation still unblocks the scanner. Existing stream authorization and size
+limits are preserved. Matching Node Agent `0.13.35` / Server `v1.6.584` deployment
+and live stream acceptance remain separate from component publication.
 
 The authenticated backend connection declares the exact `key-audit-v1,key-delegation-v1` capabilities. A compatible Proxy requires that declaration for every verified API Key stream, including full keys, so an older embedded backend cannot bypass terminal audit. Ordinary non-Key streams retain their existing backend compatibility.
 
