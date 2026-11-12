@@ -6,9 +6,9 @@ COPY --from=snapshot-ca-certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl
 COPY package/ubuntu-apt.lock /licenses/ubuntu-apt.lock
 
 ARG DAPPER_HOST_ARCH=amd64
-ARG GO_VERSION=1.27.3
-ARG GO_SHA256_amd64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
-ARG GO_SHA256_arm=d6f4e11dd7157030d7ac11c51c8f73201a2db932d593c3106b1da11cc32bfdf8
+ARG GO_VERSION=1.27.4
+ARG GO_SHA256_amd64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
+ARG GO_SHA256_arm=e50964c41c6e187375387939e2f380de7250eba44e2259dfeb75c540d9d585c3
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOST_ARCH=${DAPPER_HOST_ARCH} \
