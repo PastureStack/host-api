@@ -6,9 +6,9 @@ COPY --from=snapshot-ca-certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl
 COPY package/ubuntu-apt.lock /licenses/ubuntu-apt.lock
 
 ARG DAPPER_HOST_ARCH=amd64
-ARG GO_VERSION=1.27.3
-ARG GO_SHA256_amd64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
-ARG GO_SHA256_arm=d6f4e11dd7157030d7ac11c51c8f73201a2db932d593c3106b1da11cc32bfdf8
+ARG GO_VERSION=1.27.4
+ARG GO_SHA256_amd64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
+ARG GO_SHA256_arm=e50964c41c6e187375387939e2f380de7250eba44e2259dfeb75c540d9d585c3
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOST_ARCH=${DAPPER_HOST_ARCH} \
@@ -36,16 +36,16 @@ ADD --checksum=sha256:51cf418571059831096abd40e0bd5debaa1ae48a6f8d87d9e4e5f7f12a
 ADD --checksum=sha256:0de729b8fe0e1c67c04e8e8d5bd6e0420dbd47f75b93f0b71c8e740edc2d5ffc https://snapshot.ubuntu.com/ubuntu/20261107T000000Z/pool/main/a/apt/apt_3.2.1ubuntu0.1_amd64.deb /tmp/apt.deb
 ADD --checksum=sha256:94e5d41303265b66af0f8c70ade18bfb77260ad286edee6c8045faddef82b94c https://snapshot.ubuntu.com/ubuntu/20261107T000000Z/pool/main/a/apt/libapt-pkg7.0_3.2.1ubuntu0.1_amd64.deb /tmp/libapt-pkg7.0.deb
 ADD --checksum=sha256:bedeef1cf3268f90338c411cdb0a45b224d0660fd2240f310f380316c8244606 https://snapshot.ubuntu.com/ubuntu/20261107T000000Z/pool/main/b/brotli/libbrotli1_1.2.0-3ubuntu0.1_amd64.deb /tmp/libbrotli1.deb
-ADD --checksum=sha256:f775d4438862c9eba5453eacf5134baeceee26b2a94827082758052a649ae968 https://snapshot.ubuntu.com/ubuntu/20261107T000000Z/pool/main/l/linux/linux-libc-dev_7.0.0-42.42_amd64.deb /tmp/linux-libc-dev.deb
+ADD --checksum=sha256:3a3adc14e3332fc017b1d0e4e39655298a2a977d51db6e80de533ac60137b07f https://security.ubuntu.com/ubuntu/pool/main/l/linux/linux-libc-dev_7.0.0-43.43_amd64.deb /tmp/linux-libc-dev.deb
 
-ADD --checksum=sha256:5b6326f1932cfd7be57130561dc78192f09ed9f58bfbe6606ed0c50510c3b6cd https://snapshot.ubuntu.com/ubuntu/20261104T000000Z/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.26.04.1_all.deb /opt/pasturestack-ca-certificates.deb
+ADD --checksum=sha256:a7e3bf769aec16ba21ca39cba180d6d311dafcbae68346a05f137c5cc26c9ca6 https://security.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.26.04.2_all.deb /opt/pasturestack-ca-certificates.deb
 RUN set -eux; \
     . /licenses/ubuntu-apt.lock; \
     find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i \
         -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
         -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' {} +; \
     printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::http::Pipeline-Depth "0";\nAcquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";\nAcquire::AllowInsecureRepositories "false";\nAPT::Get::AllowUnauthenticated "false";\n' > /etc/apt/apt.conf.d/80pasturestack-retries; \
-    apt-get --snapshot "${UBUNTU_APT_SNAPSHOT}" update; \
+    apt-get --snapshot "${UBUNTU_APT_SNAPSHOT}" update --error-on=any; \
     apt-get --snapshot "${UBUNTU_APT_SNAPSHOT}" install -y --no-install-recommends \
         bash="${UBUNTU_APT_BASH_VERSION}" \
         busybox-static="${UBUNTU_APT_BUSYBOX_STATIC_VERSION}" \
@@ -67,7 +67,7 @@ RUN set -eux; \
     for package in curl libcurl3t64-gnutls libcurl4t64 libssl3t64 openssl openssl-provider-legacy linux-libc-dev apt libapt-pkg7.0 libbrotli1; do \
         case "$package" in \
             curl|libcurl*) expected=8.18.0-1ubuntu2.8 ;; \
-            linux-libc-dev) expected=7.0.0-42.42 ;; \
+            linux-libc-dev) expected=7.0.0-43.43 ;; \
             apt|libapt-pkg7.0) expected=3.2.1ubuntu0.1 ;; \
             libbrotli1) expected=1.2.0-3ubuntu0.1 ;; \
             *) expected=3.5.5-1ubuntu3.7 ;; \
@@ -82,7 +82,7 @@ RUN set -eux; \
     for package in curl libcurl3t64-gnutls libcurl4t64 libssl3t64 openssl openssl-provider-legacy linux-libc-dev apt libapt-pkg7.0 libbrotli1; do \
         case "$package" in \
             curl|libcurl*) expected=8.18.0-1ubuntu2.8 ;; \
-            linux-libc-dev) expected=7.0.0-42.42 ;; \
+            linux-libc-dev) expected=7.0.0-43.43 ;; \
             apt|libapt-pkg7.0) expected=3.2.1ubuntu0.1 ;; \
             libbrotli1) expected=1.2.0-3ubuntu0.1 ;; \
             *) expected=3.5.5-1ubuntu3.7 ;; \
@@ -92,7 +92,7 @@ RUN set -eux; \
     done; \
     dpkg -i /opt/pasturestack-ca-certificates.deb && \
     update-ca-certificates --fresh && \
-    test "$(dpkg-query -W -f='${Version}' ca-certificates)" = '20260816ubuntu0.26.04.1' && \
+    test "$(dpkg-query -W -f='${Version}' ca-certificates)" = '20260816ubuntu0.26.04.2' && \
     test ! -e /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_G3.crt && \
     rm -f /opt/pasturestack-ca-certificates.deb && \
     { \
