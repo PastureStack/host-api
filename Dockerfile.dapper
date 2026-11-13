@@ -36,7 +36,7 @@ ADD --checksum=sha256:51cf418571059831096abd40e0bd5debaa1ae48a6f8d87d9e4e5f7f12a
 ADD --checksum=sha256:0de729b8fe0e1c67c04e8e8d5bd6e0420dbd47f75b93f0b71c8e740edc2d5ffc https://snapshot.ubuntu.com/ubuntu/20261107T000000Z/pool/main/a/apt/apt_3.2.1ubuntu0.1_amd64.deb /tmp/apt.deb
 ADD --checksum=sha256:94e5d41303265b66af0f8c70ade18bfb77260ad286edee6c8045faddef82b94c https://snapshot.ubuntu.com/ubuntu/20261107T000000Z/pool/main/a/apt/libapt-pkg7.0_3.2.1ubuntu0.1_amd64.deb /tmp/libapt-pkg7.0.deb
 ADD --checksum=sha256:bedeef1cf3268f90338c411cdb0a45b224d0660fd2240f310f380316c8244606 https://snapshot.ubuntu.com/ubuntu/20261107T000000Z/pool/main/b/brotli/libbrotli1_1.2.0-3ubuntu0.1_amd64.deb /tmp/libbrotli1.deb
-ADD --checksum=sha256:f775d4438862c9eba5453eacf5134baeceee26b2a94827082758052a649ae968 https://snapshot.ubuntu.com/ubuntu/20261107T000000Z/pool/main/l/linux/linux-libc-dev_7.0.0-42.42_amd64.deb /tmp/linux-libc-dev.deb
+ADD --checksum=sha256:3a3adc14e3332fc017b1d0e4e39655298a2a977d51db6e80de533ac60137b07f https://security.ubuntu.com/ubuntu/pool/main/l/linux/linux-libc-dev_7.0.0-43.43_amd64.deb /tmp/linux-libc-dev.deb
 
 ADD --checksum=sha256:a7e3bf769aec16ba21ca39cba180d6d311dafcbae68346a05f137c5cc26c9ca6 https://security.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.26.04.2_all.deb /opt/pasturestack-ca-certificates.deb
 RUN set -eux; \
@@ -67,7 +67,7 @@ RUN set -eux; \
     for package in curl libcurl3t64-gnutls libcurl4t64 libssl3t64 openssl openssl-provider-legacy linux-libc-dev apt libapt-pkg7.0 libbrotli1; do \
         case "$package" in \
             curl|libcurl*) expected=8.18.0-1ubuntu2.8 ;; \
-            linux-libc-dev) expected=7.0.0-42.42 ;; \
+            linux-libc-dev) expected=7.0.0-43.43 ;; \
             apt|libapt-pkg7.0) expected=3.2.1ubuntu0.1 ;; \
             libbrotli1) expected=1.2.0-3ubuntu0.1 ;; \
             *) expected=3.5.5-1ubuntu3.7 ;; \
@@ -82,7 +82,7 @@ RUN set -eux; \
     for package in curl libcurl3t64-gnutls libcurl4t64 libssl3t64 openssl openssl-provider-legacy linux-libc-dev apt libapt-pkg7.0 libbrotli1; do \
         case "$package" in \
             curl|libcurl*) expected=8.18.0-1ubuntu2.8 ;; \
-            linux-libc-dev) expected=7.0.0-42.42 ;; \
+            linux-libc-dev) expected=7.0.0-43.43 ;; \
             apt|libapt-pkg7.0) expected=3.2.1ubuntu0.1 ;; \
             libbrotli1) expected=1.2.0-3ubuntu0.1 ;; \
             *) expected=3.5.5-1ubuntu3.7 ;; \
