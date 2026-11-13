@@ -6,7 +6,7 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Capabilities
 
-[Host API `0.38.9`](https://github.com/PastureStack/host-api/releases/tag/v0.38.9) is published, built with Go 1.27.3. Original CI passed source, reproducibility, vulnerability and packaged-binary checks. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
+[Host API `0.38.10`](https://github.com/PastureStack/host-api/releases/tag/v0.38.10) is published, built with Go 1.27.4. Original CI passed source, reproducibility, vulnerability and packaged-binary checks. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
 
 Bounded Docker log streams drain the final frame before closing at EOF, while
 cancellation still unblocks the scanner. Existing stream authorization and size
@@ -49,7 +49,7 @@ The inherited project remains licensed under [Apache License 2.0](LICENSE). Copy
 
 ## October 2026 security maintenance
 
-Maintained Go builds select the patched Go 1.27.3 compiler without raising the existing Go language requirement. Ubuntu build/runtime stages apply the checksum-pinned `ca-certificates 20260816ubuntu0.26.04.1` security package after their frozen APT baseline; the final trust store and installed version are verified. Release artifacts must pass the repository's existing checks before publication.
+Maintained Go builds select the patched Go 1.27.4 compiler without raising the existing Go language requirement. Ubuntu build/runtime stages apply the checksum-pinned `ca-certificates 20260816ubuntu0.26.04.1` security package after their frozen APT baseline; the final trust store and installed version are verified. Release artifacts must pass the repository's existing checks before publication.
 
 Future release gates retain and evaluate every product severity, including UNKNOWN.
 No newly reported or officially fixable product vulnerability is accepted; this
