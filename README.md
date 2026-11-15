@@ -6,7 +6,7 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Capabilities
 
-[Host API `0.38.10`](https://github.com/PastureStack/host-api/releases/tag/v0.38.10) is published, built with Go 1.27.4. Original CI passed source, reproducibility, vulnerability and packaged-binary checks. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
+This source builds [Host API `0.38.11`](https://github.com/PastureStack/host-api/releases/tag/v0.38.11) with Go 1.27.4 and OpenTelemetry Go 1.47.0 for [CVE-2026-128085](https://github.com/open-telemetry/opentelemetry-go/security/advisories/GHSA-q7gw-24fr-5p69). The release gate checks source, reproducibility, vulnerabilities, and the packaged binary before publication. Target-bound API Key tickets require matching Engine introspection at handshake and during logs, exec, and statistics streams. Revocation or expiry closes the stream; it does not stop its container or kill an already started exec process. Legacy and full-without-expiry tokens retain their authentication contract.
 
 Bounded Docker log streams drain the final frame before closing at EOF, while
 cancellation still unblocks the scanner. Existing stream authorization and size
